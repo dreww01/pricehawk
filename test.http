@@ -1,0 +1,226 @@
+# PriceHawk API - Test Requests
+# Install VS Code "REST Client" extension to use this file
+# Click "Send Request" above each request to execute
+
+# =============================================================================
+# VARIABLES - Update these with your values
+# =============================================================================
+
+@supabaseUrl = https://lfldxuvhkkmkqgcjefrp.supabase.co
+@supabaseAnonKey = sb_publishable_xXCMojYW9HV__URwz_5ITA_SIyDvF_E
+@apiUrl = http://localhost:5000
+
+# After login, paste your access_token here
+@accessToken = eyJhbGciOiJFUzI1NiIsImtpZCI6ImZhNjVmZWZhLTg0NzUtNDE4ZC1iMTVjLWE1OGZjZmU0NjgxMCIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2xmbGR4dXZoa2tta3FnY2plZnJwLnN1cGFiYXNlLmNvL2F1dGgvdjEiLCJzdWIiOiIzNmYxMmJiMC0wYjU0LTQzMGMtOGYyYS0wMzM0YjgyOWNkNDQiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiZXhwIjoxNzY3NDA3OTUxLCJpYXQiOjE3Njc0MDQzNTEsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsInBob25lIjoiIiwiYXBwX21ldGFkYXRhIjp7InByb3ZpZGVyIjoiZW1haWwiLCJwcm92aWRlcnMiOlsiZW1haWwiXX0sInVzZXJfbWV0YWRhdGEiOnsiZW1haWxfdmVyaWZpZWQiOnRydWV9LCJyb2xlIjoiYXV0aGVudGljYXRlZCIsImFhbCI6ImFhbDEiLCJhbXIiOlt7Im1ldGhvZCI6InBhc3N3b3JkIiwidGltZXN0YW1wIjoxNzY3NDA0MzUxfV0sInNlc3Npb25faWQiOiI2MDY0MjczOC1kMmU1LTRiZDctOTQ5Mi1lODVmOWMxOWI4NjciLCJpc19hbm9ueW1vdXMiOmZhbHNlfQ.RDMiBPjMzl0bbaPNPmQ_n6yT3-dYDh-7ofA9cUQHRFZWR3KCCWARqMAkbIIRhJz4UPbPaePdr6WNlt_V5fEmRQ
+
+# =============================================================================
+# SUPABASE AUTH ENDPOINTS (hosted by Supabase)
+# =============================================================================
+
+### 1. Sign Up - Create a new user
+POST {{supabaseUrl}}/auth/v1/signup
+apikey: {{supabaseAnonKey}}
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "testpassword123"
+}
+
+### 2. Login - Get access token
+# Copy the "access_token" from response and paste into @accessToken above
+POST {{supabaseUrl}}/auth/v1/token?grant_type=password
+apikey: {{supabaseAnonKey}}
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "testpassword123"
+}
+
+### 3. Get Current User (via Supabase)
+GET {{supabaseUrl}}/auth/v1/user
+apikey: {{supabaseAnonKey}}
+Authorization: Bearer {{accessToken}}
+
+### 4. Logout
+POST {{supabaseUrl}}/auth/v1/logout
+apikey: {{supabaseAnonKey}}
+Authorization: Bearer {{accessToken}}
+
+### 5. Password Recovery (sends email)
+POST {{supabaseUrl}}/auth/v1/recover
+apikey: {{supabaseAnonKey}}
+Content-Type: application/json
+
+{
+  "email": "test@example.com"
+}
+
+# =============================================================================
+# YOUR FASTAPI ENDPOINTS (localhost)
+# =============================================================================
+
+### Health Check - No auth required
+GET {{apiUrl}}/api/health
+
+### Get Current User - Auth required
+# Should return user info if token is valid
+# Should return 403 if no token or 401 if invalid token
+GET {{apiUrl}}/api/auth/me
+Authorization: Bearer {{accessToken}}
+
+### Test without token - Should fail with 403
+GET {{apiUrl}}/api/auth/me
+
+# =============================================================================
+# MILESTONE 2 - PRODUCT MANAGEMENT
+# =============================================================================
+
+### Create Product
+POST {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "iPhone 15 Pro",
+  "competitors": [
+    {
+      "url": "https://www.amazon.com/dp/B0EXAMPLE",
+      "retailer_name": "Amazon",
+      "alert_threshold_percent": 10
+    }
+  ]
+}
+
+### List All Products
+GET {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+
+### Get Single Product (replace with actual product_id)
+@productId = 69c031e7-6951-44b2-9b66-5bafc53497c6
+GET {{apiUrl}}/api/products/{{productId}}
+Authorization: Bearer {{accessToken}}
+
+### Update Product
+PUT {{apiUrl}}/api/products/{{productId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "iPhone 15 Pro Max",
+  "is_active": true
+}
+
+### Delete Product (soft delete)
+DELETE {{apiUrl}}/api/products/{{productId}}
+Authorization: Bearer {{accessToken}}
+
+# =============================================================================
+# SAMPLE DATA - Run these to populate DB
+# =============================================================================
+
+### Create Product 2 - Samsung Galaxy
+POST {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "Samsung Galaxy S24 Ultra",
+  "competitors": [
+    {
+      "url": "https://www.amazon.com/dp/B0CS5X5C2D",
+      "retailer_name": "Amazon",
+      "alert_threshold_percent": 5
+    },
+    {
+      "url": "https://www.walmart.com/ip/Samsung-Galaxy-S24",
+      "retailer_name": "Walmart",
+      "alert_threshold_percent": 10
+    }
+  ]
+}
+
+### Create Product 3 - MacBook Pro
+POST {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "MacBook Pro 16 M3 Max",
+  "competitors": [
+    {
+      "url": "https://www.amazon.com/dp/B0CM5JVPXC",
+      "retailer_name": "Amazon",
+      "alert_threshold_percent": 8
+    },
+    {
+      "url": "https://www.ebay.com/itm/MacBook-Pro-16",
+      "retailer_name": "eBay",
+      "alert_threshold_percent": 15
+    }
+  ]
+}
+
+### Create Product 4 - Sony Headphones
+POST {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "Sony WH-1000XM5",
+  "competitors": [
+    {
+      "url": "https://www.amazon.com/dp/B0BXYCS74H",
+      "retailer_name": "Amazon",
+      "alert_threshold_percent": 10
+    }
+  ]
+}
+
+### Create Product 5 - PS5
+POST {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "PlayStation 5 Console",
+  "competitors": [
+    {
+      "url": "https://www.walmart.com/ip/PS5-Console",
+      "retailer_name": "Walmart",
+      "alert_threshold_percent": 5
+    },
+    {
+      "url": "https://www.amazon.com/dp/B0BCNKKZ91",
+      "retailer_name": "Amazon",
+      "alert_threshold_percent": 5
+    }
+  ]
+}
+
+### Create Product 6 - Nintendo Switch
+POST {{apiUrl}}/api/products
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "product_name": "Nintendo Switch OLED",
+  "competitors": [
+    {
+      "url": "https://www.amazon.com/dp/B098RKWHHZ",
+      "retailer_name": "Amazon",
+      "alert_threshold_percent": 10
+    },
+    {
+      "url": "https://www.walmart.com/ip/Nintendo-Switch-OLED",
+      "retailer_name": "Walmart",
+      "alert_threshold_percent": 10
+    },
+    {
+      "url": "https://www.ebay.com/itm/Nintendo-Switch-OLED",
+      "retailer_name": "eBay",
+      "alert_threshold_percent": 15
+    }
+  ]
+}
