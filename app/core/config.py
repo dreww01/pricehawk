@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Redis/Celery
     redis_url: str = "redis://localhost:6379/0"
 
+    # AI (Groq API)
+    groq_api_key: str | None = None
+
     # Store Discovery
     max_products_fetch: int = 500  # Max products to fetch from API-based stores (Shopify, WooCommerce)
 

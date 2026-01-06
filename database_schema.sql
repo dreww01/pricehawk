@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS price_history (
     error_message TEXT
 );
 
+-- Insights table (Milestone 5: AI-generated price analysis)
+CREATE TABLE IF NOT EXISTS insights (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    insight_text TEXT NOT NULL,
+    insight_type VARCHAR(50) NOT NULL CHECK (insight_type IN ('pattern', 'alert', 'recommendation')),
+    confidence_score DECIMAL(3,2) NOT NULL CHECK (confidence_score >= 0.00 AND confidence_score <= 1.00),
+    generated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 
 -- ---------------------------------------------------------------------------
 -- SECTION 2: Indexes for Performance
@@ -67,6 +77,10 @@ CREATE INDEX IF NOT EXISTS idx_competitors_product_id ON competitors(product_id)
 CREATE INDEX IF NOT EXISTS idx_price_history_competitor_id ON price_history(competitor_id);
 CREATE INDEX IF NOT EXISTS idx_price_history_scraped_at ON price_history(scraped_at DESC);
 CREATE INDEX IF NOT EXISTS idx_price_history_status ON price_history(scrape_status);
+
+-- Insights indexes
+CREATE INDEX IF NOT EXISTS idx_insights_product_id ON insights(product_id);
+CREATE INDEX IF NOT EXISTS idx_insights_generated_at ON insights(generated_at DESC);
 
 
 -- ---------------------------------------------------------------------------
@@ -99,6 +113,7 @@ CREATE TRIGGER products_updated_at
 ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE competitors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE price_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE insights ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Products Table Policies
@@ -215,6 +230,44 @@ CREATE POLICY "Users can view own price history"
 
 
 -- ---------------------------------------------------------------------------
+-- Insights Table Policies
+-- ---------------------------------------------------------------------------
+
+-- Drop existing policies (idempotent)
+DROP POLICY IF EXISTS "Users can view own insights" ON insights;
+DROP POLICY IF EXISTS "Service can insert insights" ON insights;
+DROP POLICY IF EXISTS "Users can delete own insights" ON insights;
+
+-- Create policies
+CREATE POLICY "Users can view own insights"
+    ON insights
+    FOR SELECT
+    USING (
+        product_id IN (
+            SELECT id FROM products
+            WHERE user_id = auth.uid()
+        )
+    );
+
+-- Service role can insert insights (for AI service)
+CREATE POLICY "Service can insert insights"
+    ON insights
+    FOR INSERT
+    WITH CHECK (true);
+
+-- Users can delete their own insights (optional)
+CREATE POLICY "Users can delete own insights"
+    ON insights
+    FOR DELETE
+    USING (
+        product_id IN (
+            SELECT id FROM products
+            WHERE user_id = auth.uid()
+        )
+    );
+
+
+-- ---------------------------------------------------------------------------
 -- SECTION 5: Verification Queries
 -- ---------------------------------------------------------------------------
 -- Run these to verify setup was successful:
@@ -223,25 +276,25 @@ CREATE POLICY "Users can view own price history"
 SELECT table_name
 FROM information_schema.tables
 WHERE table_schema = 'public'
-  AND table_name IN ('products', 'competitors', 'price_history')
+  AND table_name IN ('products', 'competitors', 'price_history', 'insights')
 ORDER BY table_name;
 
 -- 2. Check RLS is enabled
 SELECT schemaname, tablename, rowsecurity
 FROM pg_tables
-WHERE tablename IN ('products', 'competitors', 'price_history')
+WHERE tablename IN ('products', 'competitors', 'price_history', 'insights')
 ORDER BY tablename;
 
 -- 3. List all policies
 SELECT schemaname, tablename, policyname, cmd
 FROM pg_policies
-WHERE tablename IN ('products', 'competitors', 'price_history')
+WHERE tablename IN ('products', 'competitors', 'price_history', 'insights')
 ORDER BY tablename, cmd;
 
 -- 4. Check indexes
 SELECT tablename, indexname
 FROM pg_indexes
-WHERE tablename IN ('products', 'competitors', 'price_history')
+WHERE tablename IN ('products', 'competitors', 'price_history', 'insights')
 ORDER BY tablename, indexname;
 
 -- 5. Verify triggers

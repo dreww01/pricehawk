@@ -132,3 +132,61 @@ class ScrapeResultResponse(BaseModel):
     currency: str
     status: str
     error_message: str | None
+
+
+# ---------------------------------------------------------------------------
+# Insights Models
+# ---------------------------------------------------------------------------
+class InsightResponse(BaseModel):
+    """Output model for a single insight."""
+    id: str
+    product_id: str
+    insight_text: str
+    insight_type: str  # 'pattern', 'alert', 'recommendation'
+    confidence_score: Decimal
+    generated_at: datetime
+
+
+class InsightListResponse(BaseModel):
+    """Output model for list of insights."""
+    insights: list[InsightResponse]
+    total: int
+
+
+class GenerateInsightRequest(BaseModel):
+    """Request to generate insights (optional parameters for future use)."""
+    force_regenerate: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Chart Data Models
+# ---------------------------------------------------------------------------
+class ChartDataPoint(BaseModel):
+    """Single data point for chart visualization."""
+    timestamp: datetime
+    price: Decimal | None
+    currency: str
+    status: str  # 'success' or 'failed'
+
+
+class CompetitorChartData(BaseModel):
+    """Chart data for a single competitor."""
+    competitor_id: str
+    competitor_name: str
+    url: str
+    data_points: list[ChartDataPoint]
+    average_price: Decimal | None
+    min_price: Decimal | None
+    max_price: Decimal | None
+    current_price: Decimal | None
+    price_change_percent: Decimal | None  # vs first data point
+
+
+class ChartDataResponse(BaseModel):
+    """Output model for chart visualization data."""
+    product_id: str
+    product_name: str
+    competitors: list[CompetitorChartData]
+    date_range_start: datetime | None
+    date_range_end: datetime | None
+    total_data_points: int

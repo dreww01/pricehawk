@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.api.routes import auth, products, scraper, discovery
+from app.api.routes import auth, products, scraper, discovery, insights
 from app.core.config import get_settings
 
 
@@ -39,6 +39,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(products.router, prefix="/api")
 app.include_router(scraper.router, prefix="/api")
 app.include_router(discovery.router, prefix="/api")
+app.include_router(insights.router, prefix="/api")
 
 
 @app.on_event("startup")

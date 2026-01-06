@@ -8,8 +8,10 @@ from app.db.models import (
     PriceHistoryResponse,
     PriceHistoryListResponse,
     ScrapeResultResponse,
+    ChartDataResponse,
 )
 from app.services.scraper_service import scrape_url
+from app.services.chart_service import ChartService
 
 
 router = APIRouter(tags=["scraper"])
@@ -163,6 +165,40 @@ def get_latest_price(
         scrape_status=h["scrape_status"],
         error_message=h["error_message"],
     )
+
+
+@router.get(
+    "/prices/{product_id}/chart-data",
+    response_model=ChartDataResponse,
+    summary="Get chart data",
+    description="Get formatted price history data for visualization (charts).",
+)
+async def get_chart_data(
+    product_id: str,
+    days: int = 30,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ChartDataResponse:
+    """
+    Get chart-ready data for price history visualization.
+
+    Returns structured data with:
+    - Time series per competitor
+    - Min/max/average prices
+    - Price change percentages
+    - Date ranges
+    """
+    try:
+        chart_service = ChartService()
+        chart_data = await chart_service.get_chart_data(product_id, credentials.credentials, days)
+        return chart_data
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate chart data: {str(e)}"
+        )
 
 
 @router.get(
