@@ -26,3 +26,8 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Project-specific
+.claude/
+logic_used.md
+implementation.md

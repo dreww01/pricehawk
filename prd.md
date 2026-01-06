@@ -1,374 +1,621 @@
-**PRODUCT REQUIREMENTS DOCUMENT (PRD)** **PriceHawk**
+# Product Requirements Document (PRD)
+
+**Product:** PriceHawk
+**Version:** 1.0
+**Last Updated:** January 2026
+**Status:** In Development (Milestones 1-4 Complete)
 
 ---
 
-## **OVERVIEW**
+## Executive Summary
 
-**Product:** API service that monitors competitor product prices, detects changes, analyzes patterns with AI, and sends alerts.
-
-**Target Users:** E-commerce businesses, retailers, dropshippers
-
-**Timeline:** 2 weeks (API) + 3-4 days (UI)
-
-**Tech Stack:**
-- **Backend:** FastAPI, Supabase (Auth + PostgreSQL), Celery, Redis, BeautifulSoup/Scrapy, Groq API
-- **Frontend:** Jinja2, HTMX, Tailwind CSS, DaisyUI
+**PriceHawk** is a multi-platform price monitoring system that discovers products from competitor stores (Shopify, WooCommerce, Amazon, eBay, and custom sites), tracks their prices over time, and provides automated alerts on price changes. The system uses a plugin-based architecture to support any e-commerce platform and scales to monitor thousands of products.
 
 ---
 
-## **CORE FEATURES**
+## Product Overview
 
-1. User authentication via Supabase
-2. Add/manage competitor products to monitor
-3. Automated daily price scraping
-4. AI-powered price analysis and pattern detection
-5. Alert system (email notifications)
-6. Price history tracking and retrieval
-7. Export data functionality
+### Vision
+
+Enable e-commerce businesses to make data-driven pricing decisions by providing real-time competitor price intelligence across all major platforms.
+
+### Target Users
+
+- E-commerce businesses
+- Retailers and resellers
+- Dropshippers
+- Price analysts
+
+### Value Proposition
+
+- **Multi-platform support**: Discover products from any store (Shopify, Amazon, eBay, WooCommerce, custom)
+- **Automated monitoring**: Daily price scraping with zero manual effort
+- **AI insights**: Pattern detection and pricing recommendations (Milestone 5)
+- **Instant alerts**: Email notifications on significant price changes (Milestone 6)
 
 ---
 
-## **MILESTONE-BASED IMPLEMENTATION**
+## Technical Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **API Framework** | FastAPI | High-performance async HTTP API |
+| **Database** | Supabase (PostgreSQL) | Managed database with built-in auth and RLS |
+| **Authentication** | Supabase Auth | JWT-based user authentication |
+| **Task Queue** | Celery + Redis | Background scraping and scheduling |
+| **Web Scraping** | httpx, BeautifulSoup, Playwright | Multi-platform data extraction |
+| **Data Validation** | Pydantic | Type-safe request/response models |
+| **AI Analysis** | Groq API | Price pattern detection (Milestone 5) |
+| **Frontend** | Jinja2, HTMX, Tailwind CSS | Server-rendered UI (Milestone 8) |
 
 ---
 
-### **MILESTONE 1: Supabase Setup & FastAPI Integration (Days 1-2)**
+## Core Features
+
+1. **Multi-platform product discovery** - Find products from any e-commerce store
+2. **Competitor tracking** - Monitor selected products across multiple stores
+3. **Automated price scraping** - Daily background scraping via Celery
+4. **Price history** - Track price changes over time
+5. **AI-powered analysis** - Detect pricing patterns and trends (Milestone 5)
+6. **Alert system** - Email notifications on price changes (Milestone 6)
+7. **Data export** - CSV export of price history (Milestone 7)
+
+---
+
+## Milestone-Based Implementation
+
+**Development Status:**
+- ✅ Milestone 1: Foundation Setup (Complete)
+- ✅ Milestone 2: Store Discovery System (Complete)
+- ✅ Milestone 3: Product Tracking Management (Complete)
+- ✅ Milestone 4: Price Scraping & Background Tasks (Complete)
+- ⏳ Milestone 5: AI Price Analysis (Planned)
+- ⏳ Milestone 6: Alert System (Planned)
+- ⏳ Milestone 7: Data Export & Production Readiness (Planned)
+- ⏳ Milestone 8: Frontend UI (Planned)
+
+---
+
+### **MILESTONE 1: Foundation Setup (Supabase + FastAPI)**
 
 **Deliverables:**
 
-- Supabase project created with PostgreSQL database
-- Supabase Email/Password authentication enabled
-- FastAPI project with proper folder structure
-- JWT token verification middleware implemented
-- Environment variables configuration
-- Health check and protected test endpoint
+- Supabase project with PostgreSQL database
+- Database schema (products, competitors, price_history)
+- Supabase authentication enabled (Email/Password)
+- FastAPI application with modular structure
+- JWT token verification middleware
+- Environment configuration (.env)
+- Health check endpoint
+
+**Database Schema:**
+
+```sql
+-- Products table (tracking groups)
+CREATE TABLE products (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id),
+    product_name VARCHAR(255) NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Competitors table (URLs to monitor)
+CREATE TABLE competitors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    retailer_name VARCHAR(100),
+    alert_threshold_percent DECIMAL(5,2) DEFAULT 10.00,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Price history table
+CREATE TABLE price_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    competitor_id UUID NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+    price DECIMAL(10,2),
+    currency VARCHAR(3) DEFAULT 'USD',
+    scraped_at TIMESTAMP DEFAULT NOW(),
+    scrape_status VARCHAR(20) NOT NULL, -- 'success' or 'failed'
+    error_message TEXT
+);
+
+-- Indexes
+CREATE INDEX idx_products_user_id ON products(user_id);
+CREATE INDEX idx_products_is_active ON products(is_active);
+CREATE INDEX idx_competitors_product_id ON competitors(product_id);
+CREATE INDEX idx_price_history_competitor_id ON price_history(competitor_id);
+CREATE INDEX idx_price_history_scraped_at ON price_history(scraped_at DESC);
+```
+
+**RLS Policies:**
+
+```sql
+-- Products: Users can only access their own products
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY products_select ON products FOR SELECT
+    USING (auth.uid() = user_id);
+
+CREATE POLICY products_insert ON products FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY products_update ON products FOR UPDATE
+    USING (auth.uid() = user_id);
+
+CREATE POLICY products_delete ON products FOR DELETE
+    USING (auth.uid() = user_id);
+
+-- Competitors: Users can only access competitors of their products
+ALTER TABLE competitors ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY competitors_select ON competitors FOR SELECT
+    USING (
+        EXISTS (
+            SELECT 1 FROM products
+            WHERE products.id = competitors.product_id
+            AND products.user_id = auth.uid()
+        )
+    );
+
+-- Price history: Users can only read price history of their products
+ALTER TABLE price_history ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY price_history_select ON price_history FOR SELECT
+    USING (
+        EXISTS (
+            SELECT 1 FROM competitors
+            JOIN products ON products.id = competitors.product_id
+            WHERE competitors.id = price_history.competitor_id
+            AND products.user_id = auth.uid()
+        )
+    );
+```
 
 **API Endpoints:**
 
 ```
 GET /api/health
-GET /api/auth/me (protected - returns current user)
 ```
 
-**Database Setup:**
-
-- Create Supabase project
-- Enable Row Level Security (RLS) on all tables
-- Configure authentication settings
-- Get project URL, anon key, and service key
-
-**Testing Checklist:**
-
-- [ ]  Supabase project created and accessible
-- [ ]  User can signup via Supabase dashboard/client
-- [ ]  User can login and receive valid JWT token
-- [ ]  FastAPI successfully verifies Supabase JWT
-- [ ]  Protected endpoint rejects requests without token
-- [ ]  Protected endpoint rejects invalid/expired tokens
-- [ ]  Protected endpoint accepts valid token and returns user data
-- [ ]  Environment variables load correctly from .env file
-
-**🔒 SECURITY CHECKPOINT:**
-
-- **Issue:** Supabase service key exposed in version control or client-side code
-- **Fix Required:** Store service key only in .env file, add .env to .gitignore, use anon key for client auth only
-- **Issue:** Row Level Security (RLS) not enabled on tables
-- **Fix Required:** Enable RLS on ALL tables, create policies that verify auth.uid() matches user_id
-- **Issue:** No HTTPS enforcement in production
-- **Fix Required:** Configure FastAPI to reject HTTP requests, force HTTPS only
-- **Issue:** JWT tokens never expire or have excessive expiration time
-- **Fix Required:** Set reasonable token expiration (24 hours), implement refresh token flow
-
-**Critical Files Needed:**
+**FastAPI Structure:**
 
 ```
-.env (DATABASE_URL, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY)
-main.py
-/app/core/auth.py (JWT verification)
-/app/core/config.py (settings management)
-requirements.txt
+/app
+  /api/routes         # API endpoints
+  /core               # Config, security, auth
+  /db                 # Database models, Supabase client
+  /services           # Business logic (discovery, scraping)
+  /tasks              # Celery background tasks
+main.py               # FastAPI app entry point
 ```
-
----
-
-### **MILESTONE 2: Product Management (Days 3-4)**
-
-**Deliverables:**
-
-- Product CRUD endpoints (Create, Read, Update, Delete)
-- Competitor URLs management within products
-- User isolation via RLS policies
-- Input validation using Pydantic models
-- Proper error handling and HTTP status codes
-
-**API Endpoints:**
-
-```
-POST /api/products (protected)
-GET /api/products (protected - list all user's products)
-GET /api/products/{product_id} (protected)
-PUT /api/products/{product_id} (protected)
-DELETE /api/products/{product_id} (protected)
-```
-
-**Database Schema:**
-
-```sql
-products table:
-- id (UUID, primary key)
-- user_id (UUID, references auth.users)
-- product_name (VARCHAR 255)
-- created_at (TIMESTAMP)
-- updated_at (TIMESTAMP)
-- is_active (BOOLEAN)
-
-competitors table:
-- id (UUID, primary key)
-- product_id (UUID, references products)
-- url (TEXT)
-- retailer_name (VARCHAR 100)
-- alert_threshold_percent (DECIMAL, default 10.00)
-- created_at (TIMESTAMP)
-```
-
-**RLS Policies Required:**
-
-- Users can only SELECT their own products (WHERE user_id = auth.uid())
-- Users can only INSERT products with their own user_id
-- Users can only UPDATE their own products
-- Users can only DELETE their own products
-- Same policies for competitors table (via product_id join)
-
-**Pydantic Models:**
-
-- ProductCreate (product_name, list of competitor URLs)
-- ProductUpdate (product_name, is_active, alert_threshold)
-- ProductResponse (all fields including competitors list)
-- CompetitorCreate (url, retailer_name, alert_threshold)
-
-**Testing Checklist:**
-
-- [ ]  User can create product with 1+ competitor URLs
-- [ ]  User can retrieve list of only their products
-- [ ]  User can retrieve single product by ID
-- [ ]  User cannot access another user’s product (returns 404/403)
-- [ ]  User can update product name and settings
-- [ ]  User can soft delete product (set is_active=false)
-- [ ]  Updated_at timestamp updates automatically
-- [ ]  Validation rejects invalid URLs
-- [ ]  Validation rejects empty product names
-- [ ]  Maximum 50 products per user enforced
-
-**🔒 SECURITY CHECKPOINT:**
-
-- **Issue:** User can access other users’ products by guessing product_id
-- **Fix Required:** RLS policies must verify user_id matches auth.uid() for ALL operations
-- **Issue:** No URL validation allows localhost, internal IPs, or malicious domains
-- **Fix Required:** Validate URLs with regex, block localhost (127.0.0.1), private IPs (192.168.x.x, 10.x.x.x), only allow HTTPS
-- **Issue:** User can create unlimited products (resource exhaustion)
-- **Fix Required:** Implement limit of 50 products per user, check count before INSERT
-- **Issue:** XSS vulnerability via product_name in future UI
-- **Fix Required:** Sanitize all string inputs, escape HTML characters
-- **Issue:** SQL injection via unvalidated inputs
-- **Fix Required:** Use Supabase client or SQLAlchemy ORM (parameterized queries), never concatenate user input into SQL
-
-**Database Indexes:**
-
-```
-CREATE INDEX idx_products_user_id ON products(user_id);
-CREATE INDEX idx_products_is_active ON products(is_active);
-CREATE INDEX idx_competitors_product_id ON competitors(product_id);
-```
-
----
-
-### **MILESTONE 3: Price Scraping Engine (Days 5-7)**
-
-**Deliverables:**
-
-- Web scraper service that extracts prices from URLs
-- Support for Amazon, eBay, Walmart (minimum 3 retailers)
-- User-agent rotation and rate limiting
-- Comprehensive error handling
-- Price history storage in database
-- Manual scrape endpoint for testing
-
-**API Endpoints:**
-
-```
-POST /api/scrape/manual/{product_id} (protected - manual trigger for testing)
-GET /api/prices/{product_id}/history (protected - get all price history)
-GET /api/prices/latest/{competitor_id} (protected - get latest price)
-```
-
-**Database Schema:**
-
-```sql
-price_history table:
-- id (UUID, primary key)
-- competitor_id (UUID, references competitors)
-- price (DECIMAL 10,2)
-- currency (VARCHAR 3, default 'USD')
-- scraped_at (TIMESTAMP)
-- scrape_status (VARCHAR 20: 'success' or 'failed')
-- error_message (TEXT, nullable)
-```
-
-**RLS Policy:**
-
-- Users can only SELECT price_history for their own products (via competitor_id → product_id → user_id join)
-- No user INSERT policy (only backend can insert via service key)
-
-**Scraper Requirements:**
-
-- Whitelist allowed domains: amazon.com, ebay.com, walmart.com (and country variants)
-- Block localhost, 127.0.0.1, 192.168.x.x, 10.x.x.x
-- Random user-agent rotation (minimum 5 different agents)
-- Random delay between requests (2-5 seconds)
-- Request timeout: 30 seconds max
-- Max response size: 5MB
-- Max redirects: 5
-- Handle different price formats: $19.99, 19,99€, 1.999,00
-- Multiple CSS selectors per retailer (fallback logic)
-
-**Price Extraction Strategy:**
-
-- Amazon: Check .a-price-whole, #priceblock_ourprice, .a-offscreen
-- eBay: Check .x-price-primary, #prcIsum, .display-price
-- Walmart: Check [itemprop=“price”], .price-characteristic
-- Parse and clean price text (remove symbols, handle decimals)
-
-**Testing Checklist:**
-
-- [ ]  Successfully scrapes Amazon product page (test 5+ different products)
-- [ ]  Successfully scrapes eBay product page (test 5+ different products)
-- [ ]  Successfully scrapes Walmart product page (test 5+ different products)
-- [ ]  Returns 404 error gracefully for non-existent pages
-- [ ]  Returns timeout error after 30 seconds
-- [ ]  Rejects URLs from non-whitelisted domains
-- [ ]  Rejects localhost/internal IP URLs
-- [ ]  Handles redirects correctly (up to 5)
-- [ ]  Stops download if response exceeds 5MB
-- [ ]  Price extraction accuracy verified manually (100% match)
-- [ ]  Handles different currency formats correctly
-- [ ]  Stores successful scrape in price_history
-- [ ]  Stores failed scrape with error message
-- [ ]  User-agent rotation working (check logs)
-
-**🔒 CRITICAL SCRAPING INTEGRITY ISSUES:**
-
-- **Issue:** Websites block scraper due to aggressive request patterns
-- **Fix Required:** Implement random delays (2-5 sec), rotate user agents, rate limit to 1 request per domain per 5 seconds globally
-- **Issue:** Scraping malicious or private URLs submitted by user
-- **Fix Required:** Strict domain whitelist, block all non-public domains, validate before scraping
-- **Issue:** Infinite redirect loops crash scraper
-- **Fix Required:** Set max_redirects=5, timeout=30 seconds
-- **Issue:** Large file downloads (videos, archives) consume memory/bandwidth
-- **Fix Required:** Stream response, check Content-Length header, abort if >5MB
-- **Issue:** Price format inconsistencies cause parsing failures
-- **Fix Required:** Robust regex parser, handle multiple formats, log unparseable prices for review
-- **Issue:** Website HTML structure changes, scraper breaks silently
-- **Fix Required:** Multiple CSS selectors per site, try all before failing, log failures with URL for manual review
-- **Issue:** Scraper leaks user information or cookies
-- **Fix Required:** Clean session per request, no persistent cookies, clear headers
-- **Issue:** Concurrent scraping of same URL wastes resources
-- **Fix Required:** Implement idempotency check (don’t scrape same competitor_id twice in same day)
-
-**Database Indexes:**
-
-```
-CREATE INDEX idx_price_history_competitor_id ON price_history(competitor_id);
-CREATE INDEX idx_price_history_scraped_at ON price_history(scraped_at DESC);
-CREATE INDEX idx_price_history_status ON price_history(scrape_status);
-```
-
----
-
-### **MILESTONE 4: Background Task Scheduler (Days 8-9)**
-
-**Deliverables:**
-
-- Celery worker setup with Redis broker
-- Celery Beat scheduler for periodic tasks
-- Daily automated scraping of all active products
-- Task retry logic with exponential backoff
-- Idempotency to prevent duplicate scrapes
-- Health check endpoint for worker status
-
-**Celery Tasks:**
-
-```
-scrape_all_products() - scheduled daily at 2 AM UTC
-scrape_single_product(competitor_id) - individual scrape task
-check_worker_health() - health check task
-```
-
-**Task Schedule:**
-
-```
-Daily scrape: 2 AM UTC every day
-Batch size: 50 competitors at a time (prevent memory overflow)
-```
-
-**Task Configuration:**
-
-- Max retries: 3
-- Retry countdown: 60 seconds (exponential backoff: 60s, 120s, 240s)
-- Task timeout: 5 minutes
-- Use Supabase service key (bypass RLS for background tasks)
-
-**Idempotency Logic:**
-
-- Check if competitor_id already scraped today (scraped_at >= today 00:00 UTC)
-- Skip if already scraped, return cached result
-- Prevents duplicate scrapes if task retries
-
-**Testing Checklist:**
-
-- [ ]  Celery worker starts successfully
-- [ ]  Redis connection established
-- [ ]  Can manually trigger scrape_single_product task
-- [ ]  Task executes and stores result in database
-- [ ]  Failed tasks retry 3 times with exponential backoff
-- [ ]  After 3 failures, task marked as failed permanently
-- [ ]  Celery Beat scheduler configured correctly
-- [ ]  Daily task triggers at 2 AM UTC (verify with logs)
-- [ ]  Idempotency prevents duplicate scrapes on same day
-- [ ]  Worker processes tasks without blocking FastAPI
-- [ ]  Batch processing limits memory usage (test with 1000+ products)
-- [ ]  Health check endpoint returns worker status
-
-**🔒 SECURITY & INTEGRITY CHECKPOINT:**
-
-- **Issue:** Celery worker uses anon key instead of service key
-- **Fix Required:** Configure Celery to use SUPABASE_SERVICE_KEY for database operations
-- **Issue:** No monitoring if Celery worker stops or crashes
-- **Fix Required:** Implement health check endpoint that verifies worker is alive and processing tasks
-- **Issue:** Tasks run multiple times if worker crashes mid-execution
-- **Fix Required:** Implement idempotency check at task start (check if work already done today)
-- **Issue:** Memory leak when processing thousands of products
-- **Fix Required:** Process in batches of 50, clear variables after each batch, use generator patterns
-- **Issue:** Redis credentials exposed or weak
-- **Fix Required:** Use strong Redis password, store in environment variables
-- **Issue:** No alerts if daily scrape fails completely
-- **Fix Required:** Log task failures, implement monitoring/alerting (e.g., email admin if 0 scrapes succeeded)
-- **Issue:** Infinite task queue if tasks keep failing and retrying
-- **Fix Required:** Set max_retries=3, after that mark as permanently failed
 
 **Environment Variables:**
 
 ```
-REDIS_URL=redis://...
-CELERY_BROKER_URL=redis://...
-CELERY_RESULT_BACKEND=redis://...
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_ANON_KEY=xxx
+SUPABASE_SERVICE_KEY=xxx (for backend tasks only)
 ```
 
-**Monitoring Requirements:**
+**Testing Checklist:**
 
-- Log total tasks queued
-- Log successful scrapes count
-- Log failed scrapes count
-- Alert if success rate < 80%
+- [ ]  Supabase project created and accessible
+- [ ]  Database tables created with correct schema
+- [ ]  RLS policies enabled and tested
+- [ ]  User can signup/login via Supabase
+- [ ]  FastAPI verifies Supabase JWT tokens
+- [ ]  Protected endpoints reject invalid tokens
+- [ ]  Environment variables load correctly
+- [ ]  Health check endpoint returns 200
+
+**🔒 SECURITY CHECKPOINT:**
+
+- **Issue:** Supabase service key exposed in version control
+- **Fix Required:** Store in .env file only, add .env to .gitignore, never commit
+- **Issue:** RLS not enabled on tables
+- **Fix Required:** Enable RLS on ALL tables, verify with test queries
+- **Issue:** No HTTPS enforcement
+- **Fix Required:** Use HTTPS in production, configure reverse proxy
+- **Issue:** Weak JWT configuration
+- **Fix Required:** Use Supabase-managed JWT with reasonable expiration (24h)
+
+---
+
+### **MILESTONE 2: Store Discovery System**
+
+**Deliverables:**
+
+- Multi-platform product discovery engine
+- Platform detection system (Shopify, WooCommerce, Amazon, eBay, Generic)
+- Plugin-based store handler architecture
+- Unified product data model across all platforms
+- Keyword filtering across product fields
+- Product tracking workflow (discovery → selection → tracking)
+
+**Architecture Pattern:**
+
+Plugin-based handler system with strategy pattern:
+1. BaseStoreHandler (abstract class defines interface)
+2. Concrete handlers (ShopifyHandler, WooCommerceHandler, etc.)
+3. Platform detector (tries handlers in priority order)
+4. Fallback to GenericHandler for unknown stores
+
+**API Endpoints:**
+
+```
+POST /api/stores/discover (protected - discover products from any store)
+POST /api/stores/track (protected - add discovered products to tracking)
+```
+
+**Store Handlers Implemented:**
+
+| Platform | Detection Method | Data Source |
+|----------|-----------------|-------------|
+| Shopify | `/products.json` endpoint | JSON API |
+| WooCommerce | `/wp-json/wc/store/products` | REST API |
+| Amazon | URL patterns (`/stores/`, `/s?`, `/brand/`) | HTML scraping |
+| eBay | URL patterns (`/str/`, `/sch/`) | HTML scraping |
+| Generic | Fallback for any HTTPS URL | HTML scraping (schema.org) |
+
+**Unified Product Model:**
+
+```python
+@dataclass
+class DiscoveredProduct:
+    name: str
+    price: Decimal | None
+    currency: str
+    image_url: str | None
+    product_url: str
+    platform: str              # shopify, woocommerce, amazon, ebay, custom
+    variant_id: str | None     # Platform-specific variant ID
+    sku: str | None
+    in_stock: bool
+    product_type: str | None   # Category/type
+    tags: list[str]            # Product tags for filtering
+    description: str | None
+```
+
+**Discovery Flow:**
+
+1. User sends store URL + optional keyword + limit
+2. System detects platform type
+3. Appropriate handler fetches products
+4. Products filtered by keyword (matches name, type, tags, description)
+5. Returns unified product list
+6. User selects products to track
+7. System creates product group + competitors
+
+**Handler Interface:**
+
+```python
+class BaseStoreHandler(ABC):
+    @abstractmethod
+    async def detect(self, url: str) -> bool:
+        """Check if URL belongs to this platform."""
+
+    @abstractmethod
+    async def fetch_products(
+        self, url: str, keyword: str | None, limit: int
+    ) -> list[DiscoveredProduct]:
+        """Fetch products from store."""
+```
+
+**Platform-Specific Logic:**
+
+**Shopify:**
+- Detection: HEAD request to `/products.json`
+- Fetches from JSON API (fast, structured)
+- Supports pagination, keyword filtering
+- Extracts variants, SKUs, tags
+
+**WooCommerce:**
+- Detection: HEAD request to `/wp-json/wc/store/products`
+- Uses WooCommerce REST API
+- Keyword search via API parameter
+- Extracts price, stock status, categories
+
+**Amazon:**
+- Detection: URL pattern matching (`amazon.com/stores/`, `/s?`)
+- Playwright browser automation (handles JS rendering)
+- Scrapes store/search pages (not product pages)
+- Extracts price, image, ASIN from HTML
+
+**eBay:**
+- Detection: URL pattern matching (`ebay.com/str/`, `/sch/`)
+- HTML scraping with BeautifulSoup
+- Scrapes store/search pages
+- Extracts price, item ID, condition
+
+**Generic:**
+- Detection: Always matches (fallback)
+- Scrapes HTML looking for schema.org microdata
+- Attempts to find price, image from structured data
+- Less reliable but works on custom stores
+
+**Testing Checklist:**
+
+- [ ]  Detects Shopify stores correctly
+- [ ]  Detects WooCommerce stores correctly
+- [ ]  Detects Amazon store pages correctly
+- [ ]  Detects eBay store pages correctly
+- [ ]  Falls back to generic handler for unknown stores
+- [ ]  Keyword filtering works across all platforms
+- [ ]  Returns unified product format from all handlers
+- [ ]  Handles API errors gracefully (returns error message)
+- [ ]  Respects limit parameter (max 250)
+- [ ]  HTTPS-only validation enforced
+- [ ]  Timeout after 30 seconds
+- [ ]  User-agent rotation prevents blocking
+
+**🔒 SECURITY CHECKPOINT:**
+
+- **Issue:** SSRF attacks via malicious URLs (localhost, internal IPs)
+- **Fix Required:** Validate URLs, block private IP ranges, only allow HTTPS
+- **Issue:** DoS via large/slow responses
+- **Fix Required:** 30s timeout, 5MB response size limit, connection pooling
+- **Issue:** XSS via unsanitized product names from external sources
+- **Fix Required:** Sanitize all scraped data before storing/displaying
+- **Issue:** User scrapes competitor sites too frequently
+- **Fix Required:** Rate limit discovery endpoint (10 requests/minute per user)
+- **Issue:** Scraper blocked by target sites
+- **Fix Required:** User-agent rotation, random delays, respectful scraping practices
+
+---
+
+### **MILESTONE 3: Product Tracking Management**
+
+**Deliverables:**
+
+- Product group CRUD endpoints
+- Track discovered products workflow
+- Competitor URL management
+- User isolation via RLS policies
+- Input validation and sanitization
+- Price history retrieval
+
+**API Endpoints:**
+
+```
+GET /api/products (protected - list user's tracking groups)
+GET /api/products/{product_id} (protected - get single group with competitors)
+PUT /api/products/{product_id} (protected - update group name/status)
+DELETE /api/products/{product_id} (protected - soft delete group)
+GET /api/prices/{product_id}/history (protected - price history for all competitors)
+GET /api/prices/latest/{competitor_id} (protected - latest price for one competitor)
+```
+
+**Workflow: Discovery → Tracking**
+
+1. User discovers products via `/api/stores/discover`
+2. User selects products to track
+3. POST `/api/stores/track` with:
+   - `group_name`: Tracking group name
+   - `product_urls`: Array of discovered product URLs
+   - `alert_threshold_percent`: Price change threshold
+4. System creates:
+   - One `products` record (the group)
+   - Multiple `competitors` records (one per URL)
+5. User can view/manage tracked products
+
+**Pydantic Models:**
+
+```python
+class ProductUpdate(BaseModel):
+    product_name: str | None  # Update group name
+    is_active: bool | None    # Enable/disable tracking
+
+class ProductResponse(BaseModel):
+    id: str
+    product_name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    competitors: list[CompetitorResponse]
+
+class CompetitorResponse(BaseModel):
+    id: str
+    url: str
+    retailer_name: str | None
+    alert_threshold_percent: Decimal
+    created_at: datetime
+```
+
+**Security: RLS Enforcement**
+
+All queries use user's JWT token (anon key):
+- Products table: `WHERE user_id = auth.uid()`
+- Competitors table: Joins through products table
+- Price history table: Joins through competitors → products
+
+Background tasks use service key to bypass RLS for scraping.
+
+**Testing Checklist:**
+
+- [ ]  User can create tracking group via `/api/stores/track`
+- [ ]  User can list all their tracking groups
+- [ ]  User can view single group with all competitors
+- [ ]  User can update group name
+- [ ]  User can soft delete group (sets `is_active = false`)
+- [ ]  User cannot access another user's groups (404/403)
+- [ ]  User can retrieve price history for their groups
+- [ ]  Price history shows all competitors in group
+- [ ]  Updated_at timestamp auto-updates
+- [ ]  XSS protection: product names are sanitized
+
+**🔒 SECURITY CHECKPOINT:**
+
+- **Issue:** User can access other users' data by guessing UUIDs
+- **Fix Required:** RLS policies enforce user_id = auth.uid() on all queries
+- **Issue:** XSS via unsanitized product names
+- **Fix Required:** Pydantic validators sanitize input (escape `<>` characters)
+- **Issue:** User creates unlimited tracking groups (resource exhaustion)
+- **Fix Required:** Enforce limit of 50 products per user (application layer)
+- **Issue:** SQL injection via unvalidated inputs
+- **Fix Required:** Use Supabase client (parameterized queries), never raw SQL with user input
+
+---
+
+### **MILESTONE 4: Price Scraping & Background Tasks**
+
+**Deliverables:**
+
+- Price scraper service for tracked competitor URLs
+- Manual scrape endpoint for immediate scraping
+- Celery worker setup with Redis broker
+- Celery Beat scheduler for daily automated scraping
+- Price history storage with status tracking
+- Worker health monitoring endpoint
+- Idempotency and retry logic
+
+**API Endpoints:**
+
+```
+POST /api/scrape/manual/{product_id} (protected - scrape all competitors now)
+GET /api/scrape/worker-health (public - check Celery worker status)
+```
+
+**Price Scraper Service:**
+
+Uses existing store handlers from discovery system:
+- Detects platform from competitor URL
+- Uses same handler logic (Shopify JSON, WooCommerce API, etc.)
+- Extracts current price from product page
+- Handles errors gracefully (404, timeout, parsing errors)
+- Stores result in `price_history` table
+
+**Scraper Architecture:**
+
+```python
+async def scrape_competitor(competitor_id: str) -> ScrapeResult:
+    1. Fetch competitor URL from database
+    2. Detect platform (reuse discovery handlers)
+    3. Extract price using handler
+    4. Store result in price_history
+    5. Return success/failure status
+```
+
+**Price History Model:**
+
+```sql
+INSERT INTO price_history (
+    competitor_id,
+    price,
+    currency,
+    scraped_at,
+    scrape_status,  -- 'success' or 'failed'
+    error_message   -- NULL on success, error details on failure
+)
+```
+
+**Celery Background Tasks:**
+
+**Task: `scrape_single_competitor(competitor_id)`**
+- Scrapes one competitor URL
+- Stores result in price_history
+- Retries on failure (max 3 retries)
+- Exponential backoff: 60s, 120s, 240s
+- Timeout: 5 minutes
+
+**Task: `scrape_all_products()`**
+- Runs daily at 2 AM UTC via Celery Beat
+- Fetches all active products
+- Fetches all competitors for each product
+- Queues individual scrape tasks
+- Batch processing (50 at a time to avoid memory issues)
+- Uses Supabase service key (bypasses RLS)
+
+**Celery Configuration:**
+
+```python
+# app/tasks/celery_app.py
+from celery import Celery
+from celery.schedules import crontab
+
+app = Celery('pricehawk', broker=REDIS_URL)
+
+app.conf.beat_schedule = {
+    'scrape-all-daily': {
+        'task': 'app.tasks.scraper_tasks.scrape_all_products',
+        'schedule': crontab(hour=2, minute=0),  # 2 AM UTC
+    },
+}
+```
+
+**Idempotency Logic:**
+
+Before scraping, check if already scraped today:
+```sql
+SELECT * FROM price_history
+WHERE competitor_id = ?
+AND scraped_at >= CURRENT_DATE
+```
+If found, skip scrape and return cached result. Prevents duplicate scrapes on retry.
+
+**Manual Scrape Flow:**
+
+1. User calls POST `/api/scrape/manual/{product_id}`
+2. Backend fetches all competitors for product
+3. Queues Celery tasks for each competitor
+4. Returns immediate response with task IDs
+5. Tasks execute in background
+6. User can check results via `/api/prices/{product_id}/history`
+
+**Worker Health Check:**
+
+```python
+GET /api/scrape/worker-health
+
+Response:
+{
+    "worker_status": "healthy",
+    "ping_response": "['celery@hostname']",
+    "active_tasks": 2,
+    "error": null
+}
+```
+
+**Testing Checklist:**
+
+- [ ]  Manual scrape endpoint triggers scraping
+- [ ]  Scraper successfully extracts prices from tracked URLs
+- [ ]  Failed scrapes store error message in database
+- [ ]  Celery worker starts and connects to Redis
+- [ ]  Celery Beat scheduler configured correctly
+- [ ]  Daily task runs at 2 AM UTC
+- [ ]  Tasks retry 3 times with exponential backoff
+- [ ]  Idempotency prevents duplicate scrapes same day
+- [ ]  Worker health endpoint returns status
+- [ ]  Batch processing prevents memory overflow
+- [ ]  Service key used for background tasks (not anon key)
+
+**🔒 SECURITY & INTEGRITY CHECKPOINT:**
+
+- **Issue:** Celery uses anon key instead of service key
+- **Fix Required:** Configure `SUPABASE_SERVICE_KEY` for Celery tasks
+- **Issue:** No monitoring if worker crashes
+- **Fix Required:** Health check endpoint + external monitoring (e.g., uptime checker)
+- **Issue:** Memory leak when scraping thousands of URLs
+- **Fix Required:** Batch processing (50 at a time), clear variables after each batch
+- **Issue:** Tasks retry infinitely on permanent failures
+- **Fix Required:** max_retries=3, mark as failed after exhausting retries
+- **Issue:** Redis credentials exposed
+- **Fix Required:** Store in .env, use strong password, TLS in production
+- **Issue:** No rate limiting on scraping
+- **Fix Required:** Delay between requests (2-5s), respect robots.txt
+- **Issue:** Scraper blocked by target sites
+- **Fix Required:** User-agent rotation, random delays, respectful scraping
+
+**Environment Variables:**
+
+```
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+```
 
 ---
 
@@ -837,70 +1084,62 @@ SENTRY_DSN=... (optional)
   /api
     /routes
       __init__.py
-      auth.py
-      products.py
-      scraper.py
-      insights.py
-      alerts.py
-      export.py
+      discovery.py         # Store discovery endpoints
+      products.py          # Product tracking CRUD
+      scraper.py           # Manual scrape + worker health
   /core
     __init__.py
-    config.py
-    security.py
+    config.py            # Environment settings (Pydantic)
+    security.py          # JWT verification middleware
   /db
     __init__.py
-    models.py
-    database.py
+    models.py            # Pydantic request/response models
+    database.py          # Supabase client factory
   /services
     __init__.py
-    scraper_service.py
-    ai_service.py
-    email_service.py
+    store_discovery.py   # Main discovery orchestrator
+    store_detector.py    # Platform detection logic
+    scraper_service.py   # Price scraping service
+    /stores              # Handler plugins
+      __init__.py
+      base.py            # BaseStoreHandler abstract class
+      shopify.py         # Shopify handler
+      woocommerce.py     # WooCommerce handler
+      amazon.py          # Amazon handler
+      ebay.py            # eBay handler
+      generic.py         # Fallback generic handler
   /tasks
     __init__.py
-    celery_app.py
-    scraper_tasks.py
-    alert_tasks.py
+    celery_app.py        # Celery configuration
+    scraper_tasks.py     # Background scraping tasks
   /tests
     __init__.py
-    test_auth.py
-    test_products.py
-    test_scraper.py
-    test_insights.py
-    test_alerts.py
-    conftest.py
+    test_discovery.py    # Discovery system tests
+    test_products.py     # Product endpoints tests
+    test_scraper.py      # Scraper tests
+    conftest.py          # Pytest fixtures
   __init__.py
-/templates
+/templates                 # (Future: Milestone 8)
   base.html
   /auth
     login.html
     signup.html
   /dashboard
     index.html
-  /products
-    list.html
-    detail.html
-    _product_card.html
-  /insights
-    index.html
-  /alerts
-    settings.html
-  /components
-    navbar.html
-    flash_messages.html
-/static
+/static                    # (Future: Milestone 8)
   /css
     output.css
   /js
     htmx.min.js
-main.py
-requirements.txt
-tailwind.config.js
-.env.example
+main.py                    # FastAPI app entry point
+run.py                     # Development server runner
+pyproject.toml             # UV dependencies
+uv.lock
+.env                       # Environment variables (gitignored)
+.env.example               # Template for .env
 .gitignore
-Dockerfile
-docker-compose.yml
 README.md
+database_schema.sql        # Database setup SQL
 ```
 
 ---

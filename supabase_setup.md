@@ -258,3 +258,51 @@ This will involve:
 1. Creating database tables (products, competitors)
 2. Setting up Row Level Security (RLS) policies
 3. Building CRUD API endpoints
+
+---
+
+## Milestone 3: Price History Table
+
+Run this SQL in the Supabase SQL Editor to create the `price_history` table:
+
+```sql
+-- Create price_history table
+CREATE TABLE price_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    competitor_id UUID NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+    price DECIMAL(10, 2),
+    currency VARCHAR(3) DEFAULT 'USD',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    scrape_status VARCHAR(20) NOT NULL CHECK (scrape_status IN ('success', 'failed')),
+    error_message TEXT
+);
+
+-- Create indexes for performance
+CREATE INDEX idx_price_history_competitor_id ON price_history(competitor_id);
+CREATE INDEX idx_price_history_scraped_at ON price_history(scraped_at DESC);
+CREATE INDEX idx_price_history_status ON price_history(scrape_status);
+
+-- Enable RLS
+ALTER TABLE price_history ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policy: Users can view price history for their own products
+-- (via competitor_id → product_id → user_id join)
+CREATE POLICY "Users can view own price history"
+    ON price_history
+    FOR SELECT
+    USING (
+        competitor_id IN (
+            SELECT c.id FROM competitors c
+            JOIN products p ON c.product_id = p.id
+            WHERE p.user_id = auth.uid()
+        )
+    );
+
+-- No INSERT/UPDATE/DELETE policies for users
+-- Only service key (backend) can insert price history
+```
+
+### Verify the table was created:
+```sql
+SELECT * FROM price_history LIMIT 1;
+```

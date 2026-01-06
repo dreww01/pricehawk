@@ -12,6 +12,23 @@ class Settings(BaseSettings):
     # App
     debug: bool = False
 
+    # Proxy (Webshare API key for dynamic proxy list)
+    webshare_api_key: str | None = None
+
+    # Redis/Celery
+    redis_url: str = "redis://localhost:6379/0"
+
+    # Store Discovery
+    max_products_fetch: int = 500  # Max products to fetch from API-based stores (Shopify, WooCommerce)
+
+    @property
+    def celery_broker_url(self) -> str:
+        return self.redis_url
+
+    @property
+    def celery_result_backend(self) -> str:
+        return self.redis_url
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
