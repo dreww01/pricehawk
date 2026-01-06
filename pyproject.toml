@@ -19,4 +19,5 @@ dependencies = [
     "playwright>=1.40.0",
     "celery[redis]>=5.3.0",
     "redis>=5.0.0",
+    "groq>=0.11.0",
 ]

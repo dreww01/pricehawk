@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
 
 from app.core.config import get_settings
 
@@ -230,6 +229,8 @@ async def fetch_with_httpx(url: str, proxy: str | None = None) -> str | None:
 
 async def fetch_with_playwright(url: str, proxy: str | None = None) -> str | None:
     """Fallback fetch using Playwright for JS-heavy sites."""
+    from playwright.async_api import async_playwright
+
     # Parse proxy URL
     proxy_config = None
     if proxy:
