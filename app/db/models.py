@@ -51,21 +51,11 @@ class TrackProductsRequest(BaseModel):
     alert_threshold_percent: Decimal = Field(default=Decimal("10.00"), ge=0, le=100)
 
 
-class InitialPriceResult(BaseModel):
-    """Initial price scraped when tracking a product."""
-    url: str
-    price: Decimal | None
-    currency: str
-    status: str  # 'success' or 'failed'
-    error_message: str | None = None
-
-
 class TrackProductsResponse(BaseModel):
     """Response from tracking products."""
     group_id: str
     group_name: str
     products_added: int
-    initial_prices: list[InitialPriceResult] = []
 
 
 # ---------------------------------------------------------------------------
@@ -197,75 +187,6 @@ class ChartDataResponse(BaseModel):
     product_id: str
     product_name: str
     competitors: list[CompetitorChartData]
-
-
-# ---------------------------------------------------------------------------
-# Alert Models
-# ---------------------------------------------------------------------------
-class AlertSettingsResponse(BaseModel):
-    """Output model for user alert settings."""
-    user_id: str
-    email_enabled: bool
-    digest_frequency_hours: int  # 6, 12, or 24
-    alert_price_drop: bool
-    alert_price_increase: bool
-    last_digest_sent_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class AlertSettingsUpdate(BaseModel):
-    """Input model for updating alert settings."""
-    email_enabled: bool | None = None
-    digest_frequency_hours: int | None = Field(None, ge=6, le=24)
-    alert_price_drop: bool | None = None
-    alert_price_increase: bool | None = None
-
-    @field_validator("digest_frequency_hours")
-    @classmethod
-    def validate_frequency(cls, v: int | None) -> int | None:
-        if v is not None and v not in [6, 12, 24]:
-            raise ValueError("digest_frequency_hours must be 6, 12, or 24")
-        return v
-
-
-class PendingAlertResponse(BaseModel):
-    """Output model for a pending alert."""
-    id: str
-    product_name: str
-    competitor_name: str
-    alert_type: str  # 'price_drop' or 'price_increase'
-    old_price: Decimal
-    new_price: Decimal
-    price_change_percent: Decimal
-    currency: str
-    detected_at: datetime
-
-
-class PendingAlertsListResponse(BaseModel):
-    """Output model for list of pending alerts."""
-    alerts: list[PendingAlertResponse]
-    total: int
-
-
-class AlertHistoryResponse(BaseModel):
-    """Output model for alert history (sent digests)."""
-    id: str
-    digest_sent_at: datetime
-    alerts_count: int
-    email_status: str  # 'sent', 'failed', 'pending'
-    error_message: str | None
-
-
-class AlertHistoryListResponse(BaseModel):
-    """Output model for list of alert history."""
-    history: list[AlertHistoryResponse]
-    total: int
-
-
-class TestEmailRequest(BaseModel):
-    """Request to send a test email."""
-    email: str | None = None  # If None, use user's registered email
     date_range_start: datetime | None
     date_range_end: datetime | None
     total_data_points: int
