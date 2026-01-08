@@ -3,6 +3,7 @@ import random
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -55,6 +56,38 @@ PRICE_SELECTORS = {
         ".price-characteristic",
         "[data-automation='buybox-price']",
     ],
+    "shopify": [
+        ".price__current .money",
+        ".product__price .money",
+        ".product-price .money",
+        "[data-product-price]",
+        ".price-item--regular",
+        ".price-item--sale",
+        ".ProductMeta__Price",
+        ".product-single__price",
+    ],
+    "woocommerce": [
+        ".woocommerce-Price-amount bdi",
+        ".woocommerce-Price-amount",
+        ".price ins .amount",
+        ".price .amount",
+        ".summary .price",
+        "p.price span.amount",
+    ],
+    "generic": [
+        "[itemprop='price']",
+        "[data-price]",
+        "[data-product-price]",
+        "meta[property='product:price:amount']",
+        ".price",
+        ".product-price",
+        ".current-price",
+        ".sale-price",
+        ".regular-price",
+        "#product-price",
+        ".price-value",
+        ".amount",
+    ],
 }
 
 
@@ -106,6 +139,16 @@ def get_retailer(url: str) -> str:
     return "unknown"
 
 
+def detect_platform_from_html(html: str) -> str | None:
+    """Detect e-commerce platform from HTML content."""
+    html_lower = html.lower()
+    if "shopify" in html_lower or "cdn.shopify" in html_lower:
+        return "shopify"
+    if "woocommerce" in html_lower or "wc-block" in html_lower:
+        return "woocommerce"
+    return None
+
+
 def parse_price(text: str) -> tuple[Decimal | None, str]:
     """Extract price and currency from text."""
     if not text:
@@ -113,9 +156,11 @@ def parse_price(text: str) -> tuple[Decimal | None, str]:
 
     text = text.strip()
 
-    # Detect currency
+    # Detect currency (check NGN/₦ first since Nigerian stores are common)
     currency = "USD"
-    if "£" in text:
+    if "₦" in text or "NGN" in text.upper():
+        currency = "NGN"
+    elif "£" in text:
         currency = "GBP"
     elif "€" in text:
         currency = "EUR"
@@ -123,7 +168,7 @@ def parse_price(text: str) -> tuple[Decimal | None, str]:
         currency = "CAD"
 
     # Remove currency symbols and clean
-    cleaned = re.sub(r"[£€$,\s]", "", text)
+    cleaned = re.sub(r"[£€$₦,\s]", "", text)
     cleaned = re.sub(r"[A-Za-z]", "", cleaned)
 
     # Handle European format (1.234,56 → 1234.56)
@@ -147,15 +192,45 @@ def parse_price(text: str) -> tuple[Decimal | None, str]:
 def extract_price_from_html(html: str, retailer: str) -> tuple[Decimal | None, str]:
     """Extract price using BeautifulSoup with retailer-specific selectors."""
     soup = BeautifulSoup(html, "lxml")
-    selectors = PRICE_SELECTORS.get(retailer, [])
 
-    for selector in selectors:
-        elements = soup.select(selector)
-        for el in elements:
-            text = el.get_text(strip=True)
-            price, currency = parse_price(text)
-            if price and price > 0:
-                return price, currency
+    # Build selector priority: retailer-specific → platform-detected → generic
+    selector_groups = []
+
+    # 1. Try retailer-specific selectors first
+    if retailer in PRICE_SELECTORS:
+        selector_groups.append(PRICE_SELECTORS[retailer])
+
+    # 2. Detect platform from HTML (Shopify, WooCommerce)
+    if retailer == "unknown":
+        detected_platform = detect_platform_from_html(html)
+        if detected_platform and detected_platform in PRICE_SELECTORS:
+            selector_groups.append(PRICE_SELECTORS[detected_platform])
+
+    # 3. Always add generic selectors as final fallback
+    selector_groups.append(PRICE_SELECTORS["generic"])
+
+    # Try each selector group
+    for selectors in selector_groups:
+        for selector in selectors:
+            try:
+                # Handle meta tags differently
+                if selector.startswith("meta["):
+                    elements = soup.select(selector)
+                    for el in elements:
+                        content = el.get("content", "")
+                        if content:
+                            price, currency = parse_price(str(content))
+                            if price and price > 0:
+                                return price, currency
+                else:
+                    elements = soup.select(selector)
+                    for el in elements:
+                        text = el.get_text(strip=True)
+                        price, currency = parse_price(text)
+                        if price and price > 0:
+                            return price, currency
+            except Exception:
+                continue
 
     return None, "USD"
 
@@ -306,3 +381,72 @@ async def scrape_url(url: str) -> ScrapeResult:
         price=None, currency="USD", status="failed",
         error_message=last_error or "Could not extract price from page"
     )
+
+
+async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
+    """
+    Scrape a competitor URL, store the price, and check for alert triggers.
+
+    This function combines scraping with alert detection.
+    Called by Celery tasks and manual scrape endpoints.
+
+    Args:
+        competitor_id: UUID of competitor to scrape
+
+    Returns:
+        dict with keys: scrape_result, alert_result
+    """
+    from app.db.database import get_supabase_client
+    from app.services.alert_service import AlertService
+
+    sb = get_supabase_client()  # Use service key
+
+    # Fetch competitor URL
+    comp_response = (
+        sb.table("competitors")
+        .select("id, url")
+        .eq("id", competitor_id)
+        .single()
+        .execute()
+    )
+
+    if not comp_response.data:
+        return {
+            "scrape_result": {"status": "failed", "error": "Competitor not found"},
+            "alert_result": None
+        }
+
+    url = comp_response.data["url"]
+
+    # Scrape the URL
+    scrape_result = await scrape_url(url)
+
+    # Store price history
+    price_data = {
+        "competitor_id": competitor_id,
+        "price": float(scrape_result.price) if scrape_result.price else None,
+        "currency": scrape_result.currency,
+        "scrape_status": scrape_result.status,
+        "error_message": scrape_result.error_message
+    }
+    sb.table("price_history").insert(price_data).execute()
+
+    # Check for alerts if scrape was successful
+    alert_result = None
+    if scrape_result.status == "success" and scrape_result.price:
+        alert_service = AlertService()
+        alert_result = await alert_service.check_price_change_and_alert(
+            competitor_id=competitor_id,
+            new_price=scrape_result.price,
+            currency=scrape_result.currency
+        )
+
+    return {
+        "scrape_result": {
+            "status": scrape_result.status,
+            "price": float(scrape_result.price) if scrape_result.price else None,
+            "currency": scrape_result.currency,
+            "error": scrape_result.error_message
+        },
+        "alert_result": alert_result
+    }

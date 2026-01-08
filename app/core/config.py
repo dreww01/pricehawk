@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     # AI (Groq API)
     groq_api_key: str | None = None
 
+    # Email (Resend SMTP API)
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    from_email: str | None = None
+    from_name: str | None = None
+
     # Store Discovery
     max_products_fetch: int = 500  # Max products to fetch from API-based stores (Shopify, WooCommerce)
 

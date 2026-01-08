@@ -13,12 +13,18 @@ class AIService:
     """Service for AI-powered price analysis using Groq."""
 
     def __init__(self):
-        settings = get_settings()
-        self.groq_api_key = settings.groq_api_key
-        if not self.groq_api_key:
-            raise ValueError("GROQ_API_KEY not configured in environment")
-        self.client = Groq(api_key=self.groq_api_key)
+        self._client = None
         self.model = "llama-3.3-70b-versatile"
+
+    @property
+    def client(self):
+        """Lazy initialization of Groq client."""
+        if self._client is None:
+            settings = get_settings()
+            if not settings.groq_api_key:
+                raise ValueError("GROQ_API_KEY not configured in environment")
+            self._client = Groq(api_key=settings.groq_api_key)
+        return self._client
 
     async def generate_insights(self, product_id: str, user_token: str) -> list[dict[str, Any]]:
         """
@@ -270,8 +276,7 @@ Rules:
 
     async def _store_insights(self, product_id: str, insights: list[dict]) -> None:
         """Store insights in database using service key."""
-        settings = get_settings()
-        sb = get_supabase_client(settings.sb_service_key)
+        sb = get_supabase_client()  # No token = uses service key, bypasses RLS
 
         for insight in insights:
             sb.table("insights").insert({

@@ -31,11 +31,22 @@ celery_app.conf.update(
     # Result expiration (24 hours)
     result_expires=86400,
 
-    # Beat schedule - daily scrape at 2 AM UTC
+    # Beat schedule
     beat_schedule={
+        # Daily scrape at 2 AM UTC
         "daily-scrape-all-products": {
             "task": "app.tasks.scraper_tasks.scrape_all_products",
             "schedule": crontab(hour=2, minute=0),
+        },
+        # Send alert digests every hour
+        "hourly-send-alert-digests": {
+            "task": "app.tasks.scraper_tasks.send_alert_digests",
+            "schedule": crontab(minute=0),  # Every hour at :00
+        },
+        # Clean up old alerts daily at 3 AM UTC
+        "daily-cleanup-old-alerts": {
+            "task": "app.tasks.scraper_tasks.cleanup_old_alerts",
+            "schedule": crontab(hour=3, minute=0),
         },
     },
 )

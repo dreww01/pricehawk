@@ -1,6 +1,11 @@
 from supabase import create_client, Client
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import get_settings
+
+# Shared security instance
+security = HTTPBearer()
 
 
 def get_supabase_client(access_token: str | None = None) -> Client:
@@ -14,8 +19,20 @@ def get_supabase_client(access_token: str | None = None) -> Client:
 
     if access_token:
         client = create_client(settings.sb_url, settings.sb_anon_key)
-        # Set Authorization header with user's JWT for RLS
+        # Use postgrest.auth() to properly set the JWT for RLS
         client.postgrest.auth(access_token)
         return client
 
     return create_client(settings.sb_url, settings.sb_service_key)
+
+
+def get_user_supabase_client(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Client:
+    """
+    Dependency to get authenticated Supabase client with user's JWT token.
+
+    This ensures consistent token handling across all endpoints.
+    Use this instead of manually calling get_supabase_client(credentials.credentials).
+    """
+    return get_supabase_client(credentials.credentials)

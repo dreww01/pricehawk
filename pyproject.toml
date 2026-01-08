@@ -1,6 +1,6 @@
 [project]
 name = "pricehawk"
-version = "0.1.0"
+version = "1.0.0"
 description = "Monitor competitor prices, detect changes, and get AI-powered insights"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -20,4 +20,26 @@ dependencies = [
     "celery[redis]>=5.3.0",
     "redis>=5.0.0",
     "groq>=0.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["app/tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
 ]

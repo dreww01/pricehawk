@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -9,7 +11,9 @@ from app.db.models import (
     DiscoveredProductResponse,
     TrackProductsRequest,
     TrackProductsResponse,
+    InitialPriceResult,
 )
+from app.services.scraper_service import scrape_url
 from app.services.store_discovery import discover_products
 
 
@@ -89,20 +93,50 @@ async def track_products(
     group = group_result.data[0]
     group_id = group["id"]
 
-    # Add competitors for each product URL
-    competitors_data = [
-        {
+    # Add competitors for each product URL (extract domain as retailer_name)
+    competitors_data = []
+    for url in body.product_urls:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        competitors_data.append({
             "product_id": group_id,
             "url": url,
+            "retailer_name": domain,
             "alert_threshold_percent": float(body.alert_threshold_percent),
-        }
-        for url in body.product_urls
-    ]
+        })
 
     competitors_result = client.table("competitors").insert(competitors_data).execute()
+
+    # Auto-scrape to get initial prices
+    initial_prices = []
+    service_client = get_supabase_client()
+
+    for competitor in competitors_result.data or []:
+        scrape_result = await scrape_url(competitor["url"])
+
+        # Store in price_history
+        price_data = {
+            "competitor_id": competitor["id"],
+            "price": float(scrape_result.price) if scrape_result.price else None,
+            "currency": scrape_result.currency,
+            "scrape_status": scrape_result.status,
+            "error_message": scrape_result.error_message,
+        }
+        service_client.table("price_history").insert(price_data).execute()
+
+        initial_prices.append(InitialPriceResult(
+            url=competitor["url"],
+            price=scrape_result.price,
+            currency=scrape_result.currency,
+            status=scrape_result.status,
+            error_message=scrape_result.error_message,
+        ))
 
     return TrackProductsResponse(
         group_id=group_id,
         group_name=body.group_name,
         products_added=len(competitors_result.data or []),
+        initial_prices=initial_prices,
     )
