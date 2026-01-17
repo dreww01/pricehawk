@@ -57,7 +57,7 @@ Multi-platform price monitoring system that discovers products from competitor s
 ### 1. Clone & Install
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/dreww01/pricehawk.git
 cd pricehawk
 uv sync
 ```
