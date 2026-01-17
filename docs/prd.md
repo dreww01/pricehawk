@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-**PriceHawk** is a multi-platform price monitoring system that discovers products from competitor stores (Shopify, WooCommerce, Amazon, eBay, and custom sites), tracks their prices over time, and provides automated alerts on price changes. The system uses a plugin-based architecture to support any e-commerce platform and scales to monitor thousands of products.
+**PriceHawk** is a multi-platform price monitoring system that discovers products from competitor stores (Shopify, WooCommerce, and custom sites), tracks their prices over time, and provides automated alerts on price changes. The system uses a plugin-based architecture to support any e-commerce platform and scales to monitor thousands of products.
 
 ---
 
@@ -28,7 +28,7 @@ Enable e-commerce businesses to make data-driven pricing decisions by providing 
 
 ### Value Proposition
 
-- **Multi-platform support**: Discover products from any store (Shopify, Amazon, eBay, WooCommerce, custom)
+- **Multi-platform support**: Discover products from any store (Shopify, WooCommerce, custom)
 - **Automated monitoring**: Daily price scraping with zero manual effort
 - **AI insights**: Pattern detection and pricing recommendations (Milestone 5)
 - **Instant alerts**: Email notifications on significant price changes (Milestone 6)
@@ -229,7 +229,7 @@ SUPABASE_SERVICE_KEY=xxx (for backend tasks only)
 **Deliverables:**
 
 - Multi-platform product discovery engine
-- Platform detection system (Shopify, WooCommerce, Amazon, eBay, Generic)
+- Platform detection system (Shopify, WooCommerce, Generic)
 - Plugin-based store handler architecture
 - Unified product data model across all platforms
 - Keyword filtering across product fields
@@ -256,8 +256,6 @@ POST /api/stores/track (protected - add discovered products to tracking)
 |----------|-----------------|-------------|
 | Shopify | `/products.json` endpoint | JSON API |
 | WooCommerce | `/wp-json/wc/store/products` | REST API |
-| Amazon | URL patterns (`/stores/`, `/s?`, `/brand/`) | HTML scraping |
-| eBay | URL patterns (`/str/`, `/sch/`) | HTML scraping |
 | Generic | Fallback for any HTTPS URL | HTML scraping (schema.org) |
 
 **Unified Product Model:**
@@ -270,7 +268,7 @@ class DiscoveredProduct:
     currency: str
     image_url: str | None
     product_url: str
-    platform: str              # shopify, woocommerce, amazon, ebay, custom
+    platform: str              # shopify, woocommerce, custom
     variant_id: str | None     # Platform-specific variant ID
     sku: str | None
     in_stock: bool
@@ -318,18 +316,6 @@ class BaseStoreHandler(ABC):
 - Keyword search via API parameter
 - Extracts price, stock status, categories
 
-**Amazon:**
-- Detection: URL pattern matching (`amazon.com/stores/`, `/s?`)
-- Playwright browser automation (handles JS rendering)
-- Scrapes store/search pages (not product pages)
-- Extracts price, image, ASIN from HTML
-
-**eBay:**
-- Detection: URL pattern matching (`ebay.com/str/`, `/sch/`)
-- HTML scraping with BeautifulSoup
-- Scrapes store/search pages
-- Extracts price, item ID, condition
-
 **Generic:**
 - Detection: Always matches (fallback)
 - Scrapes HTML looking for schema.org microdata
@@ -340,8 +326,6 @@ class BaseStoreHandler(ABC):
 
 - [ ]  Detects Shopify stores correctly
 - [ ]  Detects WooCommerce stores correctly
-- [ ]  Detects Amazon store pages correctly
-- [ ]  Detects eBay store pages correctly
 - [ ]  Falls back to generic handler for unknown stores
 - [ ]  Keyword filtering works across all platforms
 - [ ]  Returns unified product format from all handlers
@@ -1105,8 +1089,6 @@ SENTRY_DSN=... (optional)
       base.py            # BaseStoreHandler abstract class
       shopify.py         # Shopify handler
       woocommerce.py     # WooCommerce handler
-      amazon.py          # Amazon handler
-      ebay.py            # eBay handler
       generic.py         # Fallback generic handler
   /tasks
     __init__.py

@@ -23,7 +23,7 @@ security = HTTPBearer()
     "/discover",
     response_model=StoreDiscoveryResponse,
     summary="Discover products from store",
-    description="Detect store platform and fetch products. Supports Shopify, WooCommerce, Amazon, eBay, and custom stores.",
+    description="Detect store platform and fetch products. Supports Shopify, WooCommerce, and custom stores.",
 )
 async def discover_store_products(
     body: StoreDiscoveryRequest,

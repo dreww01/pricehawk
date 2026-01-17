@@ -12,10 +12,10 @@ Multi-platform price monitoring system that discovers products from competitor s
 ├─────────────────────────────────────────────────────────────┤
 │  Discover  →  Track  →  Analyze  →  Alert                   │
 │                                                             │
-│  Shopify   │  Daily     │  AI        │  Email               │
-│  Amazon    │  Scraping  │  Insights  │  Digests             │
-│  eBay      │  via       │  via       │  (6/12/24h)          │
-│  WooCommerce  Celery    │  Groq      │                      │
+│  Shopify     │  Daily     │  AI        │  Email             │
+│  WooCommerce │  Scraping  │  Insights  │  Digests           │
+│  Custom      │  via       │  via       │  (6/12/24h)        │
+│              │  Celery    │  Groq      │                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -23,7 +23,7 @@ Multi-platform price monitoring system that discovers products from competitor s
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Platform Discovery** | Auto-detect and scrape Shopify, WooCommerce, Amazon, eBay stores |
+| **Multi-Platform Discovery** | Auto-detect and scrape Shopify, WooCommerce, and custom stores |
 | **Automated Tracking** | Daily background price collection via Celery + Redis |
 | **AI Insights** | Pattern detection and pricing recommendations (Groq Llama 3.3 70B) |
 | **Smart Alerts** | Digest-based email notifications (configurable 6/12/24h frequency) |
@@ -97,7 +97,7 @@ FROM_EMAIL=alerts@yourdomain.com
 3. Copy contents of `docs/database_schema.sql` and run it
 4. Verify tables created: `products`, `competitors`, `price_history`, `insights`
 
-### 4. Install Playwright (for Amazon/eBay)
+### 4. Install Playwright (for JS-rendered sites)
 
 ```bash
 playwright install chromium
@@ -259,8 +259,6 @@ pricehawk/
 │   │       ├── base.py          # Abstract base
 │   │       ├── shopify.py
 │   │       ├── woocommerce.py
-│   │       ├── amazon.py
-│   │       ├── ebay.py
 │   │       └── generic.py
 │   ├── tasks/
 │   │   ├── celery_app.py        # Celery config + Beat schedule

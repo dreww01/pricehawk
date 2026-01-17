@@ -29,6 +29,5 @@ Thumbs.db
 
 # Project-specific
 .claude/
-logic_used.md
 implementation.md
 tmpclaude*

@@ -122,16 +122,6 @@ Content-Type: application/json
   "limit": 20
 }
 
-### Discover Amazon Store/Search
-POST {{apiUrl}}/api/stores/discover
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{
-  "url": "https://www.amazon.com/s?k=wireless+headphones",
-  "limit": 10
-}
-
 # =============================================================================
 # TRACK PRODUCTS
 # =============================================================================
@@ -142,10 +132,10 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 {
-  "group_name": "Wireless Headphones",
+  "group_name": "Gymshark Shorts",
   "product_urls": [
-    "https://www.amazon.com/dp/B0BXYCS74H",
-    "https://www.amazon.com/dp/B09XXS8Y11"
+    "https://gymshark.com/products/shorts-1",
+    "https://gymshark.com/products/shorts-2"
   ],
   "alert_threshold_percent": 10
 }

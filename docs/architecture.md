@@ -25,10 +25,10 @@
 │   FastAPI App   │  ← HTTP API endpoints
 └────────┬────────┘
          │
-         ├──► Store Discovery Engine  (Milestone 2)
-         ├──► Product Tracking        (Milestone 3)
-         ├──► Price Scraper           (Milestone 4)
-         └──► Background Tasks        (Milestone 4)
+         ├──► Store Discovery Engine
+         ├──► Product Tracking
+         ├──► Price Scraper
+         └──► Background Tasks
                     │
                     ├──► Celery Worker
                     ├──► Celery Beat (Scheduler)
@@ -63,7 +63,7 @@ These are separate workflows with different requirements and lifetimes.
 ### 2. Plugin Architecture
 
 Store handlers follow the **Strategy Pattern**:
-- Each platform (Shopify, Amazon, etc.) = separate handler class
+- Each platform (Shopify, WooCommerce, etc.) = separate handler class
 - All handlers implement `BaseStoreHandler` interface
 - New platforms can be added without modifying core logic
 - Fallback handler for unknown platforms
@@ -125,8 +125,6 @@ pricehawk/
 │   │       ├── base.py            # BaseStoreHandler (abstract)
 │   │       ├── shopify.py         # ShopifyHandler
 │   │       ├── woocommerce.py     # WooCommerceHandler
-│   │       ├── amazon.py          # AmazonHandler
-│   │       ├── ebay.py            # EbayHandler
 │   │       └── generic.py         # GenericHandler (fallback)
 │   │
 │   ├── tasks/
@@ -246,8 +244,6 @@ POST /api/stores/discover
     │      │      │
     │      │      ├─ Try ShopifyHandler.detect()
     │      │      ├─ Try WooCommerceHandler.detect()
-    │      │      ├─ Try AmazonHandler.detect()
-    │      │      ├─ Try EbayHandler.detect()
     │      │      └─ Fallback: GenericHandler
     │      │
     │      ├─ 4. handler.fetch_products(url, keyword, limit)
@@ -358,9 +354,7 @@ Each handler implements a `detect(url: str) -> bool` method that determines if i
 **Priority Order** (most specific → least specific):
 1. ShopifyHandler
 2. WooCommerceHandler
-3. AmazonHandler
-4. EbayHandler
-5. GenericHandler (always matches)
+3. GenericHandler (always matches)
 
 ### Handler Detection Logic
 
@@ -384,29 +378,6 @@ async def detect(self, url: str) -> bool:
         return response.status_code in [200, 401]  # 401 = exists but needs auth
     except:
         return False
-```
-
-**AmazonHandler**
-```python
-async def detect(self, url: str) -> bool:
-    """Check URL patterns for Amazon stores/search."""
-    return (
-        "amazon.com" in url or "amazon.co" in url
-    ) and any([
-        "/stores/" in url,
-        "/s?" in url,
-        "/brand/" in url,
-    ])
-```
-
-**EbayHandler**
-```python
-async def detect(self, url: str) -> bool:
-    """Check URL patterns for eBay stores/search."""
-    return "ebay.com" in url and any([
-        "/str/" in url,  # Store page
-        "/sch/" in url,  # Search page
-    ])
 ```
 
 **GenericHandler**
@@ -477,7 +448,7 @@ class DiscoveredProduct:
     platform: str
 
     # Optional platform-specific fields
-    variant_id: str | None = None  # Shopify variant ID, Amazon ASIN, etc.
+    variant_id: str | None = None  # Shopify variant ID, platform-specific ID, etc.
     sku: str | None = None
     in_stock: bool = True
     product_type: str | None = None

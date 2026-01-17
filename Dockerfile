@@ -19,20 +19,47 @@ FROM python:3.13-slim AS production
 
 WORKDIR /app
 
+# Install Playwright system dependencies for Chromium
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user for security
 RUN groupadd --gid 1000 pricehawk && \
-    useradd --uid 1000 --gid 1000 --shell /bin/bash pricehawk
+    useradd --uid 1000 --gid 1000 --shell /bin/bash --create-home pricehawk
 
 # Copy virtual environment from builder
 COPY --from=builder /app/.venv /app/.venv
-
-# Copy application code
-COPY --chown=pricehawk:pricehawk . .
 
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/pricehawk/.cache/ms-playwright
+
+# Install Playwright Chromium browser (as root, into user's home)
+RUN mkdir -p /home/pricehawk/.cache && \
+    playwright install chromium && \
+    chown -R pricehawk:pricehawk /home/pricehawk/.cache
+
+# Copy application code
+COPY --chown=pricehawk:pricehawk . .
 
 # Switch to non-root user
 USER pricehawk

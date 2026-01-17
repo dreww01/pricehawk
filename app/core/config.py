@@ -12,9 +12,6 @@ class Settings(BaseSettings):
     # App
     debug: bool = False
 
-    # Proxy (Webshare API key for dynamic proxy list)
-    webshare_api_key: str | None = None
-
     # Redis/Celery
     redis_url: str = "redis://localhost:6379/0"
 

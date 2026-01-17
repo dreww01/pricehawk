@@ -1,8 +1,6 @@
 from app.services.stores.base import BaseStoreHandler
 from app.services.stores.shopify import ShopifyHandler
 from app.services.stores.woocommerce import WooCommerceHandler
-from app.services.stores.amazon import AmazonHandler
-from app.services.stores.ebay import EbayHandler
 from app.services.stores.generic import GenericHandler
 
 
@@ -10,8 +8,6 @@ from app.services.stores.generic import GenericHandler
 HANDLER_CLASSES: list[type[BaseStoreHandler]] = [
     ShopifyHandler,
     WooCommerceHandler,
-    AmazonHandler,
-    EbayHandler,
     GenericHandler,
 ]
 
@@ -55,8 +51,6 @@ async def get_handler_for_platform(platform: str) -> BaseStoreHandler:
     platform_map = {
         "shopify": ShopifyHandler,
         "woocommerce": WooCommerceHandler,
-        "amazon": AmazonHandler,
-        "ebay": EbayHandler,
         "custom": GenericHandler,
     }
 

@@ -11,8 +11,6 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from app.core.config import get_settings
-
 
 @dataclass
 class ScrapeResult:
@@ -36,26 +34,8 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-# CSS selectors per retailer (ordered by priority)
+# CSS selectors per platform (ordered by priority)
 PRICE_SELECTORS = {
-    "amazon": [
-        ".a-price .a-offscreen",
-        "#priceblock_ourprice",
-        "#priceblock_dealprice",
-        ".a-price-whole",
-        "[data-a-color='price'] .a-offscreen",
-    ],
-    "ebay": [
-        ".x-price-primary span",
-        "#prcIsum",
-        ".display-price",
-        "[itemprop='price']",
-    ],
-    "walmart": [
-        "[itemprop='price']",
-        ".price-characteristic",
-        "[data-automation='buybox-price']",
-    ],
     "shopify": [
         ".price__current .money",
         ".product__price .money",
@@ -160,14 +140,7 @@ def validate_url(url: str) -> tuple[bool, str | None]:
 
 
 def get_retailer(url: str) -> str:
-    """Extract retailer name from URL."""
-    hostname = urlparse(url).hostname or ""
-    if "amazon" in hostname:
-        return "amazon"
-    if "ebay" in hostname:
-        return "ebay"
-    if "walmart" in hostname:
-        return "walmart"
+    """Extract retailer name from URL (legacy, returns 'unknown' for platform detection)."""
     return "unknown"
 
 
@@ -267,59 +240,9 @@ def extract_price_from_html(html: str, retailer: str) -> tuple[Decimal | None, s
     return None, "USD"
 
 
-_cached_proxies: list[str] = []
-_proxy_cache_time: float = 0
-
-
-async def fetch_webshare_proxies() -> list[str]:
-    """Fetch proxy list from Webshare API."""
-    global _cached_proxies, _proxy_cache_time
-    import time
-
-    # Cache proxies for 5 minutes
-    if _cached_proxies and (time.time() - _proxy_cache_time) < 300:
-        return _cached_proxies
-
-    settings = get_settings()
-    if not settings.webshare_api_key:
-        return []
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                "https://proxy.webshare.io/api/v2/proxy/list/?mode=direct&page_size=10",
-                headers={"Authorization": f"Token {settings.webshare_api_key}"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            proxies = []
-            for p in data.get("results", []):
-                if p.get("valid"):
-                    proxy_url = f"http://{p['username']}:{p['password']}@{p['proxy_address']}:{p['port']}"
-                    proxies.append(proxy_url)
-
-            _cached_proxies = proxies
-            _proxy_cache_time = time.time()
-            return proxies
-    except Exception:
-        return _cached_proxies  # Return stale cache on error
-
-
-async def get_proxy_list() -> list[str | None]:
-    """Get list of proxies, including None for direct connection."""
-    proxies: list[str | None] = await fetch_webshare_proxies()
-
-    # Always add None as fallback (direct connection)
-    proxies_with_fallback: list[str | None] = list(proxies)
-    proxies_with_fallback.append(None)
-    return proxies_with_fallback
-
-
-async def fetch_with_httpx(url: str, proxy: str | None = None) -> str | None:
-    """Fast fetch using httpx with optional proxy."""
+async def fetch_with_httpx(url: str) -> str | None:
+    """Fast fetch using httpx."""
     async with httpx.AsyncClient(
-        proxy=proxy,
         timeout=30.0,
         follow_redirects=True,
         max_redirects=5,
@@ -344,30 +267,15 @@ def _get_playwright_executor() -> ThreadPoolExecutor:
     if _playwright_executor is None:
         _playwright_executor = ThreadPoolExecutor(max_workers=3)
     return _playwright_executor
-    
 
 
-def _parse_proxy_config(proxy: str | None) -> dict | None:
-    """Parse proxy URL into Playwright config dict."""
-    if not proxy:
-        return None
-    parsed = urlparse(proxy)
-    return {
-        "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-        "username": parsed.username,
-        "password": parsed.password,
-    }
-
-
-def _playwright_sync(url: str, proxy: str | None, user_agent: str) -> str | None:
+def _playwright_sync(url: str, user_agent: str) -> str | None:
     """Sync Playwright fetch - used on Windows via thread pool."""
     from playwright.sync_api import sync_playwright
 
-    proxy_config = _parse_proxy_config(proxy)
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=user_agent, proxy=proxy_config)
+        context = browser.new_context(user_agent=user_agent)
         page = context.new_page()
 
         try:
@@ -378,15 +286,13 @@ def _playwright_sync(url: str, proxy: str | None, user_agent: str) -> str | None
             browser.close()
 
 
-async def _playwright_async(url: str, proxy: str | None, user_agent: str) -> str | None:
+async def _playwright_async(url: str, user_agent: str) -> str | None:
     """Async Playwright fetch - used on Linux/macOS."""
     from playwright.async_api import async_playwright
 
-    proxy_config = _parse_proxy_config(proxy)
-
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=user_agent, proxy=proxy_config)
+        context = await browser.new_context(user_agent=user_agent)
         page = await context.new_page()
 
         try:
@@ -397,7 +303,7 @@ async def _playwright_async(url: str, proxy: str | None, user_agent: str) -> str
             await browser.close()
 
 
-async def fetch_with_playwright(url: str, proxy: str | None = None) -> str | None:
+async def fetch_with_playwright(url: str) -> str | None:
     """
     Fallback fetch using Playwright for JS-heavy sites.
     Uses sync Playwright on Windows (asyncio subprocess limitation),
@@ -411,11 +317,11 @@ async def fetch_with_playwright(url: str, proxy: str | None = None) -> str | Non
         return await loop.run_in_executor(
             _get_playwright_executor(),
             _playwright_sync,
-            url, proxy, user_agent
+            url, user_agent
         )
     else:
         # Linux/macOS: use async Playwright directly
-        return await _playwright_async(url, proxy, user_agent)
+        return await _playwright_async(url, user_agent)
 
 
 async def scrape_url(url: str) -> ScrapeResult:
@@ -424,8 +330,8 @@ async def scrape_url(url: str) -> ScrapeResult:
     Strategy:
     1. Normalize URL (add https:// if needed)
     2. Validate URL for security
-    3. Try each proxy with httpx
-    4. If no price, try each proxy with Playwright
+    3. Try httpx first (fast)
+    4. If no price, try Playwright (for JS-rendered pages)
     """
     # Normalize URL (add https:// if missing)
     normalized_url, norm_error = normalize_url(url)
@@ -440,35 +346,30 @@ async def scrape_url(url: str) -> ScrapeResult:
         return ScrapeResult(price=None, currency="USD", status="failed", error_message=error)
 
     retailer = get_retailer(url)
-    proxies = await get_proxy_list()
     last_error = None
 
     # Random delay (2-5s)
     await asyncio.sleep(random.uniform(2, 5))
 
-    # Try httpx with each proxy
-    for proxy in proxies:
-        try:
-            html = await fetch_with_httpx(url, proxy)
-            if html:
-                price, currency = extract_price_from_html(html, retailer)
-                if price:
-                    return ScrapeResult(price=price, currency=currency, status="success")
-        except Exception as e:
-            last_error = str(e)[:200]
-            continue
+    # Try httpx first (fast)
+    try:
+        html = await fetch_with_httpx(url)
+        if html:
+            price, currency = extract_price_from_html(html, retailer)
+            if price:
+                return ScrapeResult(price=price, currency=currency, status="success")
+    except Exception as e:
+        last_error = str(e)[:200]
 
-    # Try Playwright with each proxy (for JS-rendered pages)
-    for proxy in proxies:
-        try:
-            html = await fetch_with_playwright(url, proxy)
-            if html:
-                price, currency = extract_price_from_html(html, retailer)
-                if price:
-                    return ScrapeResult(price=price, currency=currency, status="success")
-        except Exception as e:
-            last_error = str(e)[:200]
-            continue
+    # Try Playwright for JS-rendered pages
+    try:
+        html = await fetch_with_playwright(url)
+        if html:
+            price, currency = extract_price_from_html(html, retailer)
+            if price:
+                return ScrapeResult(price=price, currency=currency, status="success")
+    except Exception as e:
+        last_error = str(e)[:200]
 
     return ScrapeResult(
         price=None, currency="USD", status="failed",
