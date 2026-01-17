@@ -1,14 +1,44 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+import redis
 
 from app.tasks.celery_app import celery_app
 from app.db.database import get_supabase_client
-from app.services.scraper_service import scrape_and_check_alerts
+from app.services.scraper_service import scrape_and_check_alerts, scrape_url
 from app.services.alert_service import AlertService
 from app.services.email_service import EmailService
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Lazy Redis client initialization
+_redis_client = None
+
+
+def _get_redis_client():
+    """Get or create Redis client (lazy init)."""
+    global _redis_client
+    if _redis_client is None:
+        settings = get_settings()
+        _redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+    return _redis_client
+
+
+def set_scrape_progress(task_id: str, data: dict, ttl: int = 300):
+    """Store scrape progress in Redis with TTL (default 5 min)."""
+    client = _get_redis_client()
+    client.setex(f"scrape:{task_id}", ttl, json.dumps(data))
+
+
+def get_scrape_progress(task_id: str) -> dict | None:
+    """Get scrape progress from Redis."""
+    client = _get_redis_client()
+    data = client.get(f"scrape:{task_id}")
+    return json.loads(data) if data else None
 
 BATCH_SIZE = 50
 
@@ -31,6 +61,131 @@ def _was_scraped_today(client, competitor_id: str) -> bool:
         .execute()
     )
     return bool(result.data)
+
+@celery_app.task(bind=True)
+def scrape_product_manual(self, product_id: str) -> dict:
+    """
+    Scrape all competitors for a product (manual trigger).
+
+    Updates Redis with progress for SSE streaming.
+    Called from manual scrape endpoint.
+    """
+    task_id = self.request.id
+    client = get_supabase_client()
+
+    # Fetch competitors for this product
+    competitors_result = (
+        client.table("competitors")
+        .select("id, url, retailer_name")
+        .eq("product_id", product_id)
+        .execute()
+    )
+
+    competitors = competitors_result.data or []
+    total = len(competitors)
+
+    if total == 0:
+        set_scrape_progress(task_id, {
+            "status": "completed",
+            "completed": 0,
+            "total": 0,
+            "results": [],
+            "error": "No competitors found"
+        })
+        return {"status": "completed", "results": []}
+
+    # Initialize progress
+    set_scrape_progress(task_id, {
+        "status": "scraping",
+        "completed": 0,
+        "total": total,
+        "current": None,
+        "results": []
+    })
+
+    results = []
+
+    for i, competitor in enumerate(competitors):
+        competitor_id = competitor["id"]
+        url = competitor["url"]
+        retailer = competitor.get("retailer_name") or _extract_domain(url)
+
+        # Update progress: starting this competitor
+        set_scrape_progress(task_id, {
+            "status": "scraping",
+            "completed": i,
+            "total": total,
+            "current": retailer,
+            "results": results
+        })
+
+        try:
+            # Scrape the URL
+            scrape_result = asyncio.run(scrape_url(url))
+
+            # Store in price_history
+            price_data = {
+                "competitor_id": competitor_id,
+                "price": float(scrape_result.price) if scrape_result.price else None,
+                "currency": scrape_result.currency,
+                "scrape_status": scrape_result.status,
+                "error_message": scrape_result.error_message,
+            }
+            client.table("price_history").insert(price_data).execute()
+
+            result = {
+                "competitor_id": competitor_id,
+                "retailer": retailer,
+                "price": str(scrape_result.price) if scrape_result.price else None,
+                "currency": scrape_result.currency,
+                "status": scrape_result.status,
+                "error_message": scrape_result.error_message,
+            }
+
+        except Exception as e:
+            logger.error(f"Error scraping {url}: {str(e)}")
+            result = {
+                "competitor_id": competitor_id,
+                "retailer": retailer,
+                "price": None,
+                "currency": "USD",
+                "status": "error",
+                "error_message": str(e)[:200],
+            }
+
+        results.append(result)
+
+        # Update progress: completed this competitor
+        set_scrape_progress(task_id, {
+            "status": "scraping",
+            "completed": i + 1,
+            "total": total,
+            "current": retailer,
+            "results": results
+        })
+
+    # Final progress update
+    set_scrape_progress(task_id, {
+        "status": "completed",
+        "completed": total,
+        "total": total,
+        "current": None,
+        "results": results
+    })
+
+    logger.info(f"Manual scrape completed for product {product_id}: {total} competitors")
+
+    return {"status": "completed", "results": results}
+
+
+def _extract_domain(url: str) -> str:
+    """Extract domain from URL for display."""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc.replace("www.", "")
+    except Exception:
+        return url[:30]
+
 
 @celery_app.task(
     bind=True,

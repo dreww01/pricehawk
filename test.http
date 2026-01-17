@@ -6,17 +6,24 @@
 # VARIABLES - Update these with your values
 # =============================================================================
 
-@supabaseUrl = https://lfldxuvhkkmkqgcjefrp.supabase.co
-@supabaseAnonKey = sb_publishable_xXCMojYW9HV__URwz_5ITA_SIyDvF_E
-@apiUrl = http://localhost:5000
+@apiUrl = http://localhost:8000
 
 # =============================================================================
-# SUPABASE AUTH ENDPOINTS
+# HEALTH CHECK
 # =============================================================================
 
-### 1. Sign Up - Create a new user
-POST {{supabaseUrl}}/auth/v1/signup
-apikey: {{supabaseAnonKey}}
+### Health Check - No auth required
+GET {{apiUrl}}/api/health
+
+### Worker Health Check
+GET {{apiUrl}}/api/scraper/scrape/worker-health
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+### Sign Up - Create a new user
+POST {{apiUrl}}/api/auth/signup
 Content-Type: application/json
 
 {
@@ -24,10 +31,9 @@ Content-Type: application/json
   "password": "testpassword123"
 }
 
-### 2. Login - Get access token
+### Login - Get access token
 # @name login
-POST {{supabaseUrl}}/auth/v1/token?grant_type=password
-apikey: {{supabaseAnonKey}}
+POST {{apiUrl}}/api/auth/login
 Content-Type: application/json
 
 {
@@ -38,24 +44,61 @@ Content-Type: application/json
 ###
 @accessToken = {{login.response.body.access_token}}
 
-### 3. Get Current User (via Supabase)
-GET {{supabaseUrl}}/auth/v1/user
-apikey: {{supabaseAnonKey}}
-Authorization: Bearer {{accessToken}}
-
-# =============================================================================
-# HEALTH CHECK
-# =============================================================================
-
-### Health Check - No auth required
-GET {{apiUrl}}/api/health
-
-### Get Current User - Via our API
+### Get Current User
 GET {{apiUrl}}/api/auth/me
 Authorization: Bearer {{accessToken}}
 
+### Forgot Password
+POST {{apiUrl}}/api/auth/forgot-password
+Content-Type: application/json
+
+{
+  "email": "test@example.com"
+}
+
+### Reset Password (requires tokens from email link)
+POST {{apiUrl}}/api/auth/reset-password
+Content-Type: application/json
+
+{
+  "access_token": "YOUR_ACCESS_TOKEN_FROM_EMAIL",
+  "refresh_token": "YOUR_REFRESH_TOKEN_FROM_EMAIL",
+  "new_password": "newpassword123"
+}
+
 # =============================================================================
-# STORE DISCOVERY (NEW FLOW)
+# ACCOUNT MANAGEMENT
+# =============================================================================
+
+### Get Account Settings
+GET {{apiUrl}}/api/account/settings
+Authorization: Bearer {{accessToken}}
+
+### Change Password
+POST {{apiUrl}}/api/account/change-password
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "current_password": "testpassword123",
+  "new_password": "newpassword123"
+}
+
+### Change Email
+POST {{apiUrl}}/api/account/change-email
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "new_email": "newemail@example.com"
+}
+
+### Delete Account
+DELETE {{apiUrl}}/api/account/delete
+Authorization: Bearer {{accessToken}}
+
+# =============================================================================
+# STORE DISCOVERY
 # =============================================================================
 
 ### Discover Shopify Store Products
@@ -89,18 +132,8 @@ Content-Type: application/json
   "limit": 10
 }
 
-### Discover eBay Store
-POST {{apiUrl}}/api/stores/discover
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{
-  "url": "https://www.ebay.com/sch/i.html?_nkw=laptop",
-  "limit": 10
-}
-
 # =============================================================================
-# TRACK PRODUCTS (After Discovery)
+# TRACK PRODUCTS
 # =============================================================================
 
 ### Track Discovered Products
@@ -149,20 +182,72 @@ Authorization: Bearer {{accessToken}}
 # =============================================================================
 
 ### Manual Scrape - Trigger immediate price check
-POST {{apiUrl}}/api/scrape/manual/{{productId}}
+POST {{apiUrl}}/api/scraper/scrape/manual/{{productId}}
 Authorization: Bearer {{accessToken}}
 
 ### Get Price History
-GET {{apiUrl}}/api/prices/{{productId}}/history?limit=50&offset=0
+GET {{apiUrl}}/api/scraper/prices/{{productId}}/history?limit=50&offset=0
 Authorization: Bearer {{accessToken}}
 
 ### Get Latest Price for Competitor
 @competitorId = YOUR_COMPETITOR_ID_HERE
-GET {{apiUrl}}/api/prices/latest/{{competitorId}}
+GET {{apiUrl}}/api/scraper/prices/latest/{{competitorId}}
 Authorization: Bearer {{accessToken}}
 
-### Worker Health Check
-GET {{apiUrl}}/api/scrape/worker-health
+### Get Chart Data
+GET {{apiUrl}}/api/scraper/prices/{{productId}}/chart-data?days=30
+Authorization: Bearer {{accessToken}}
+
+# =============================================================================
+# ALERTS
+# =============================================================================
+
+### Get Alert Settings
+GET {{apiUrl}}/api/alerts/settings
+Authorization: Bearer {{accessToken}}
+
+### Update Alert Settings
+PUT {{apiUrl}}/api/alerts/settings
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "email_enabled": true,
+  "digest_frequency": "daily",
+  "threshold_percent": 5.0
+}
+
+# =============================================================================
+# INSIGHTS
+# =============================================================================
+
+### Get All Insights
+GET {{apiUrl}}/api/insights
+Authorization: Bearer {{accessToken}}
+
+# =============================================================================
+# DASHBOARD
+# =============================================================================
+
+### Get Dashboard Stats
+GET {{apiUrl}}/api/dashboard/stats
+Authorization: Bearer {{accessToken}}
+
+### Get Dashboard Activity
+GET {{apiUrl}}/api/dashboard/activity
+Authorization: Bearer {{accessToken}}
+
+### Get Dashboard Products
+GET {{apiUrl}}/api/dashboard/products
+Authorization: Bearer {{accessToken}}
+
+# =============================================================================
+# EXPORT
+# =============================================================================
+
+### Export Price History to CSV
+GET {{apiUrl}}/api/export/{{productId}}/csv
+Authorization: Bearer {{accessToken}}
 
 # =============================================================================
 # ERROR TESTING
@@ -170,16 +255,6 @@ GET {{apiUrl}}/api/scrape/worker-health
 
 ### Test without token - Should fail with 403
 GET {{apiUrl}}/api/products
-
-### Test invalid URL (HTTP not HTTPS)
-POST {{apiUrl}}/api/stores/discover
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{
-  "url": "http://example.com",
-  "limit": 10
-}
 
 ### Test non-existent product
 GET {{apiUrl}}/api/products/00000000-0000-0000-0000-000000000000

@@ -1,17 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_supabase_client
+from app.middleware.rate_limit import limiter, SCRAPE_RATE_LIMIT
 from app.db.models import (
     PriceHistoryResponse,
     PriceHistoryListResponse,
     ScrapeResultResponse,
+    ScrapeTaskResponse,
     ChartDataResponse,
 )
 from app.services.scraper_service import scrape_url
 from app.services.chart_service import ChartService
+from app.tasks.scraper_tasks import scrape_product_manual, get_scrape_progress
 
 
 router = APIRouter(tags=["scraper"])
@@ -28,50 +35,96 @@ class WorkerHealthResponse(BaseModel):
 
 @router.post(
     "/scrape/manual/{product_id}",
-    response_model=list[ScrapeResultResponse],
-    summary="Manual scrape",
-    description="Trigger a manual scrape for all competitors of a tracked product.",
+    response_model=ScrapeTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Manual scrape (async)",
+    description="Queue a manual scrape for all competitors. Returns task_id for SSE streaming.",
 )
+@limiter.limit(SCRAPE_RATE_LIMIT)
 async def manual_scrape(
+    request: Request,
     product_id: str,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     current_user: CurrentUser = Depends(get_current_user),
-) -> list[ScrapeResultResponse]:
+) -> ScrapeTaskResponse:
+    """
+    Dispatch scrape task to Celery and return immediately.
+    Use /scrape/stream/{task_id} to receive real-time progress via SSE.
+    """
     client = get_supabase_client(credentials.credentials)
 
+    # Validate product exists and user owns it
     product_result = client.table("products").select("id").eq("id", product_id).execute()
     if not product_result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
-    competitors_result = client.table("competitors").select("*").eq("product_id", product_id).execute()
+    # Check competitors exist
+    competitors_result = (
+        client.table("competitors")
+        .select("id", count="exact")
+        .eq("product_id", product_id)
+        .execute()
+    )
     if not competitors_result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No competitors found")
 
-    service_client = get_supabase_client()
+    # Dispatch to Celery (non-blocking)
+    task = scrape_product_manual.delay(product_id)
 
-    results = []
-    for competitor in competitors_result.data:
-        scrape_result = await scrape_url(competitor["url"])
+    return ScrapeTaskResponse(
+        task_id=task.id,
+        status="queued",
+        message=f"Scraping {competitors_result.count} competitors"
+    )
 
-        price_data = {
-            "competitor_id": competitor["id"],
-            "price": float(scrape_result.price) if scrape_result.price else None,
-            "currency": scrape_result.currency,
-            "scrape_status": scrape_result.status,
-            "error_message": scrape_result.error_message,
+
+@router.get(
+    "/scrape/stream/{task_id}",
+    summary="Stream scrape progress (SSE)",
+    description="Server-Sent Events stream for real-time scrape progress updates.",
+)
+async def stream_scrape_progress(task_id: str):
+    """
+    SSE endpoint for real-time scrape progress.
+
+    Yields events:
+    - {"status": "scraping", "completed": 2, "total": 5, "current": "amazon.com"}
+    - {"status": "completed", "results": [...]}
+    """
+    async def event_generator():
+        timeout_seconds = 300  # 5 minute max
+        poll_interval = 1.0  # Check Redis every 1 second
+        elapsed = 0
+
+        while elapsed < timeout_seconds:
+            progress = get_scrape_progress(task_id)
+
+            if progress is None:
+                # Task not started yet or expired
+                yield f"data: {json.dumps({'status': 'queued', 'completed': 0, 'total': 0})}\n\n"
+            else:
+                yield f"data: {json.dumps(progress)}\n\n"
+
+                # Check if complete
+                if progress.get("status") in ("completed", "error"):
+                    break
+
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        # Timeout reached
+        if elapsed >= timeout_seconds:
+            yield f"data: {json.dumps({'status': 'error', 'error': 'Timeout'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
-        service_client.table("price_history").insert(price_data).execute()
-
-        results.append(ScrapeResultResponse(
-            competitor_id=competitor["id"],
-            competitor_url=competitor["url"],
-            price=scrape_result.price,
-            currency=scrape_result.currency,
-            status=scrape_result.status,
-            error_message=scrape_result.error_message,
-        ))
-
-    return results
+    )
 
 
 @router.get(

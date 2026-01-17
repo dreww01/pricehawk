@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+
+{% block title %}Alert Settings - PriceHawk{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold">Alert Settings</h1>
+
+    <!-- Loading state -->
+    <div id="loading-state" class="flex items-center justify-center py-12">
+        <svg class="h-8 w-8 animate-spin text-accent" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+    </div>
+
+    <!-- Error state -->
+    <div id="error-state" class="hidden">
+        <div class="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span id="error-message">Failed to load settings</span>
+        </div>
+    </div>
+
+    <!-- Settings content -->
+    <div id="settings-content" class="hidden space-y-6">
+        <!-- Email Notifications Card -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+            <h2 class="text-lg font-semibold mb-4">Email Notifications</h2>
+
+            <label class="flex items-center gap-4 cursor-pointer">
+                <div class="relative">
+                    <input type="checkbox" id="email-enabled" class="sr-only peer" />
+                    <div class="w-11 h-6 bg-gray-200 dark:bg-dark-border rounded-full peer-checked:bg-accent transition-colors"></div>
+                    <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transform peer-checked:translate-x-5 transition-transform"></div>
+                </div>
+                <div>
+                    <span class="font-medium text-gray-900 dark:text-white">Enable email alerts</span>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Receive price change notifications via email</p>
+                </div>
+            </label>
+
+            <div class="my-4 h-px bg-gray-200 dark:bg-dark-border"></div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Digest frequency</label>
+                <select id="digest-frequency" class="w-full max-w-xs px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-300 dark:border-dark-border rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent">
+                    <option value="0">Immediate</option>
+                    <option value="24">Daily digest</option>
+                    <option value="168">Weekly digest</option>
+                </select>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">How often to receive email summaries</p>
+            </div>
+        </div>
+
+        <!-- Alert Types Card -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+            <h2 class="text-lg font-semibold mb-4">Alert Types</h2>
+
+            <label class="flex items-center gap-4 cursor-pointer mb-4">
+                <div class="relative">
+                    <input type="checkbox" id="alert-price-drop" class="sr-only peer" />
+                    <div class="w-11 h-6 bg-gray-200 dark:bg-dark-border rounded-full peer-checked:bg-green-500 transition-colors"></div>
+                    <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transform peer-checked:translate-x-5 transition-transform"></div>
+                </div>
+                <div>
+                    <span class="font-medium text-gray-900 dark:text-white">Price drops</span>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Get notified when competitor prices decrease</p>
+                </div>
+            </label>
+
+            <label class="flex items-center gap-4 cursor-pointer">
+                <div class="relative">
+                    <input type="checkbox" id="alert-price-increase" class="sr-only peer" />
+                    <div class="w-11 h-6 bg-gray-200 dark:bg-dark-border rounded-full peer-checked:bg-amber-500 transition-colors"></div>
+                    <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transform peer-checked:translate-x-5 transition-transform"></div>
+                </div>
+                <div>
+                    <span class="font-medium text-gray-900 dark:text-white">Price increases</span>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Get notified when competitor prices increase</p>
+                </div>
+            </label>
+        </div>
+
+        <!-- Test Email Card -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+            <h2 class="text-lg font-semibold mb-2">Test Configuration</h2>
+            <p class="text-gray-500 dark:text-gray-400 mb-4">Send a test email to verify your configuration works.</p>
+
+            <button id="test-email-btn" class="px-4 py-2 border border-gray-300 dark:border-dark-border text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover rounded-lg transition-colors flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span id="test-email-btn-text">Send Test Email</span>
+            </button>
+        </div>
+
+        <!-- Pending Alerts Card -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+            <h2 class="text-lg font-semibold mb-2">Pending Alerts</h2>
+            <p class="text-gray-500 dark:text-gray-400 mb-4">Price changes waiting to be sent in next digest.</p>
+
+            <div id="pending-alerts-list" class="space-y-2">
+                <div class="text-center py-4 text-gray-400">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Alert History Card -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+            <h2 class="text-lg font-semibold mb-2">Alert History</h2>
+            <p class="text-gray-500 dark:text-gray-400 mb-4">Recent digest emails sent.</p>
+
+            <div id="alert-history-list" class="space-y-2">
+                <div class="text-center py-4 text-gray-400">Loading...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const accessToken = document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1];
+    let settings = null;
+
+    async function loadSettings() {
+        const loadingState = document.getElementById('loading-state');
+        const errorState = document.getElementById('error-state');
+        const settingsContent = document.getElementById('settings-content');
+
+        try {
+            const response = await fetch('/api/alerts/settings', {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (!response.ok) throw new Error('Failed to load settings');
+
+            settings = await response.json();
+
+            document.getElementById('email-enabled').checked = settings.email_enabled;
+            document.getElementById('digest-frequency').value = settings.digest_frequency_hours || 24;
+            document.getElementById('alert-price-drop').checked = settings.alert_price_drop;
+            document.getElementById('alert-price-increase').checked = settings.alert_price_increase;
+
+            loadingState.classList.add('hidden');
+            settingsContent.classList.remove('hidden');
+
+            loadPendingAlerts();
+            loadAlertHistory();
+        } catch (error) {
+            loadingState.classList.add('hidden');
+            errorState.classList.remove('hidden');
+            document.getElementById('error-message').textContent = 'Unable to load settings. Please refresh the page.';
+        }
+    }
+
+    async function saveSettings(updates) {
+        try {
+            const response = await fetch('/api/alerts/settings', {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(updates)
+            });
+
+            if (!response.ok) throw new Error('Failed to save settings');
+
+            showToast('Settings saved', 'success');
+        } catch (error) {
+            showToast('Failed to save settings', 'error');
+        }
+    }
+
+    async function loadPendingAlerts() {
+        const container = document.getElementById('pending-alerts-list');
+
+        try {
+            const response = await fetch('/api/alerts/pending', {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (!response.ok) throw new Error('Failed to load');
+
+            const data = await response.json();
+
+            if (data.alerts.length === 0) {
+                container.innerHTML = '<div class="text-center py-4 text-gray-400">No pending alerts</div>';
+                return;
+            }
+
+            container.innerHTML = data.alerts.slice(0, 5).map(alert => `
+                <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-white/5 rounded-lg">
+                    <div>
+                        <div class="font-medium text-gray-900 dark:text-white">${escapeHtml(alert.product_name)}</div>
+                        <div class="text-sm text-gray-500 dark:text-gray-400">${alert.competitor_name}</div>
+                    </div>
+                    <div class="text-right">
+                        <span class="px-2 py-0.5 text-xs font-medium rounded-full ${alert.alert_type === 'price_drop' ? 'bg-green-500/10 text-green-500' : 'bg-amber-500/10 text-amber-500'}">
+                            ${alert.price_change_percent > 0 ? '+' : ''}${alert.price_change_percent?.toFixed(1)}%
+                        </span>
+                        <div class="text-xs text-gray-400 mt-1">
+                            $${alert.old_price?.toFixed(2)} → $${alert.new_price?.toFixed(2)}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        } catch (error) {
+            container.innerHTML = '<div class="text-center py-4 text-red-500">Failed to load</div>';
+        }
+    }
+
+    async function loadAlertHistory() {
+        const container = document.getElementById('alert-history-list');
+
+        try {
+            const response = await fetch('/api/alerts/history?limit=5', {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (!response.ok) throw new Error('Failed to load');
+
+            const data = await response.json();
+
+            if (data.alerts.length === 0) {
+                container.innerHTML = '<div class="text-center py-4 text-gray-400">No emails sent yet</div>';
+                return;
+            }
+
+            container.innerHTML = data.alerts.map(item => {
+                const date = new Date(item.digest_sent_at).toLocaleDateString();
+                const statusClass = item.email_status === 'sent'
+                    ? 'bg-green-500/10 text-green-500'
+                    : 'bg-red-500/10 text-red-500';
+
+                return `
+                    <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-white/5 rounded-lg">
+                        <div>
+                            <div class="font-medium text-gray-900 dark:text-white">${item.alerts_count} alert${item.alerts_count !== 1 ? 's' : ''}</div>
+                            <div class="text-sm text-gray-500 dark:text-gray-400">${date}</div>
+                        </div>
+                        <span class="px-2 py-0.5 text-xs font-medium rounded-full ${statusClass}">${item.email_status}</span>
+                    </div>
+                `;
+            }).join('');
+        } catch (error) {
+            container.innerHTML = '<div class="text-center py-4 text-red-500">Failed to load</div>';
+        }
+    }
+
+    function getUserFriendlyError(status, detail) {
+        const errorMessages = {
+            400: 'Please check your input and try again.',
+            401: 'Please sign in again to continue.',
+            403: 'You do not have permission for this action.',
+            404: 'The requested resource was not found.',
+            500: 'Something went wrong. Please try again later.'
+        };
+
+        if (detail && !detail.includes('error') && !detail.includes('Error') && detail.length < 100) {
+            return detail;
+        }
+
+        return errorMessages[status] || 'An unexpected error occurred.';
+    }
+
+    async function sendTestEmail() {
+        const btn = document.getElementById('test-email-btn');
+        const btnText = document.getElementById('test-email-btn-text');
+        btn.disabled = true;
+        btnText.innerHTML = `
+            <svg class="h-4 w-4 animate-spin inline mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Sending...
+        `;
+
+        try {
+            const response = await fetch('/api/alerts/test', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                showToast('Test email sent!', 'success');
+            } else {
+                showToast(getUserFriendlyError(response.status, data.detail), 'error');
+            }
+        } catch (error) {
+            showToast('Unable to send test email. Please try again.', 'error');
+        } finally {
+            btn.disabled = false;
+            btnText.textContent = 'Send Test Email';
+        }
+    }
+
+    function showToast(message, type) {
+        const container = document.getElementById('toast-container');
+        const bgClass = type === 'success'
+            ? 'bg-green-500/10 border-green-500/20 text-green-500'
+            : 'bg-red-500/10 border-red-500/20 text-red-500';
+
+        const toast = document.createElement('div');
+        toast.className = `px-4 py-3 rounded-lg border ${bgClass} shadow-lg`;
+        toast.innerHTML = `<span>${escapeHtml(message)}</span>`;
+
+        container.appendChild(toast);
+
+        setTimeout(() => {
+            toast.remove();
+        }, 3000);
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Event listeners for auto-save
+    document.getElementById('email-enabled').addEventListener('change', (e) => {
+        saveSettings({ email_enabled: e.target.checked });
+    });
+
+    document.getElementById('digest-frequency').addEventListener('change', (e) => {
+        saveSettings({ digest_frequency_hours: parseInt(e.target.value) });
+    });
+
+    document.getElementById('alert-price-drop').addEventListener('change', (e) => {
+        saveSettings({ alert_price_drop: e.target.checked });
+    });
+
+    document.getElementById('alert-price-increase').addEventListener('change', (e) => {
+        saveSettings({ alert_price_increase: e.target.checked });
+    });
+
+    document.getElementById('test-email-btn').addEventListener('click', sendTestEmail);
+
+    // Load on page load
+    loadSettings();
+</script>
+{% endblock %}

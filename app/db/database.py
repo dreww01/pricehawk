@@ -26,6 +26,20 @@ def get_supabase_client(access_token: str | None = None) -> Client:
     return create_client(settings.sb_url, settings.sb_service_key)
 
 
+def get_supabase_client_with_session(access_token: str) -> Client:
+    """
+    Get Supabase client with active auth session.
+
+    Use this for auth operations like update_user() that require a session.
+    Regular get_supabase_client() only sets postgrest auth for RLS.
+    """
+    settings = get_settings()
+    client = create_client(settings.sb_url, settings.sb_anon_key)
+    # Set session establishes auth context for update_user() etc.
+    client.auth.set_session(access_token, access_token)
+    return client
+
+
 def get_user_supabase_client(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> Client:

@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     # Store Discovery
     max_products_fetch: int = 500  # Max products to fetch from API-based stores (Shopify, WooCommerce)
 
+    # SMTP / Email
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    from_email: str | None = None
+    from_name: str = "PriceHawk Alerts"
+
     @property
     def celery_broker_url(self) -> str:
         return self.redis_url

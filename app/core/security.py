@@ -77,3 +77,34 @@ def verify_token(
 def get_current_user(user: CurrentUser = Depends(verify_token)) -> CurrentUser:
     """Dependency to get current authenticated user."""
     return user
+
+
+async def verify_token_string(token: str) -> CurrentUser:
+    """Verify a JWT token string directly (for cookie-based auth)."""
+    settings = get_settings()
+
+    try:
+        jwks_url = f"{settings.sb_url}/auth/v1/.well-known/jwks.json"
+        jwks_client = get_jwks_client(jwks_url)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256"],
+            audience="authenticated",
+        )
+    except jwt.ExpiredSignatureError:
+        raise ValueError("Token has expired")
+    except jwt.InvalidTokenError as e:
+        raise ValueError(f"Invalid token: {e}")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise ValueError("Invalid token payload")
+
+    return CurrentUser(
+        id=user_id,
+        email=payload.get("email"),
+        role=payload.get("role"),
+    )

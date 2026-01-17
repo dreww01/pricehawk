@@ -11,7 +11,7 @@ from app.db.models import (
 )
 
 
-router = APIRouter(prefix="/products", tags=["products"])
+router = APIRouter(prefix="/tracked-products", tags=["tracked-products"])
 security = HTTPBearer()
 
 
@@ -52,6 +52,7 @@ def list_products(
         client.table("products")
         .select("*", count="exact")
         .eq("user_id", current_user.id)
+        .eq("is_active", True)
         .order("created_at", desc=True)
         .execute()
     )

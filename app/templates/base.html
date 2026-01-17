@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <!-- Theme initialization (runs before page renders to prevent flash) -->
+    <script>
+        (function() {
+            const stored = localStorage.getItem('theme');
+            const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const isDark = stored === 'dark' || (stored !== 'light' && systemDark);
+            document.documentElement.classList.toggle('dark', isDark);
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}PriceHawk{% endblock %}</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            bg: '#0f0f1a',
+                            card: '#1a1a2e',
+                            hover: '#252542',
+                            border: '#2a2a4a',
+                        },
+                        accent: '#f59e0b',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- HTMX -->
+    <script src="{{ url_for('static', path='js/htmx.min.js') }}"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+    <!-- Custom styles -->
+    <style>
+        /* HTMX loading indicator */
+        .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator,
+        .htmx-request.htmx-indicator { display: inline-block; }
+
+        /* Smooth transitions for HTMX swaps */
+        .htmx-swapping { opacity: 0; transition: opacity 0.2s ease-out; }
+        .htmx-settling { opacity: 1; transition: opacity 0.2s ease-in; }
+
+        /* Custom scrollbar for dark mode */
+        .dark ::-webkit-scrollbar { width: 8px; height: 8px; }
+        .dark ::-webkit-scrollbar-track { background: #1a1a2e; }
+        .dark ::-webkit-scrollbar-thumb { background: #3a3a5a; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #4a4a6a; }
+
+        /* Spinner animation */
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { animation: spin 1s linear infinite; }
+
+        /* Sidebar transition */
+        .sidebar-overlay {
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+        #sidebar-toggle:checked ~ .sidebar-overlay {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .sidebar-panel {
+            transform: translateX(-100%);
+            transition: transform 0.3s ease;
+        }
+        #sidebar-toggle:checked ~ .sidebar-panel {
+            transform: translateX(0);
+        }
+        @media (min-width: 1024px) {
+            .sidebar-panel { transform: translateX(0); }
+            .sidebar-overlay { display: none; }
+        }
+
+        /* Dropdown */
+        .dropdown-content {
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-8px);
+            transition: all 0.2s ease;
+        }
+        .dropdown:focus-within .dropdown-content {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="min-h-screen bg-gray-50 text-gray-900 dark:bg-dark-bg dark:text-gray-100">
+    <!-- Mobile sidebar toggle -->
+    <input id="sidebar-toggle" type="checkbox" class="hidden" />
+
+    <!-- Sidebar overlay (mobile) -->
+    <label for="sidebar-toggle" class="sidebar-overlay fixed inset-0 bg-black/50 z-40 lg:hidden"></label>
+
+    <!-- Sidebar -->
+    {% include "components/sidebar.html" %}
+
+    <!-- Main wrapper -->
+    <div class="lg:ml-64 flex flex-col min-h-screen">
+        <!-- Navbar -->
+        {% include "components/navbar.html" %}
+
+        <!-- Flash messages -->
+        {% include "components/flash.html" %}
+
+        <!-- Page content -->
+        <main class="flex-1 p-4 md:p-6 lg:p-8">
+            {% block content %}{% endblock %}
+        </main>
+
+        <!-- Footer -->
+        <footer class="p-4 text-center text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-dark-border">
+            PriceHawk - Price Monitoring System
+        </footer>
+    </div>
+
+    <!-- HTMX configuration -->
+    <script>
+        document.body.addEventListener('htmx:configRequest', (event) => {
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+            if (csrfToken) {
+                event.detail.headers['X-CSRF-Token'] = csrfToken;
+            }
+        });
+
+        document.body.addEventListener('htmx:afterSwap', (event) => {
+            const toggle = document.getElementById('sidebar-toggle');
+            if (toggle && toggle.checked) {
+                toggle.checked = false;
+            }
+        });
+    </script>
+
+    <!-- Theme switcher logic -->
+    <script>
+        function getEffectiveTheme(preference) {
+            if (preference === 'system') {
+                return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            return preference;
+        }
+
+        function updateThemeUI(preference) {
+            const effective = getEffectiveTheme(preference);
+            document.documentElement.classList.toggle('dark', effective === 'dark');
+
+            document.getElementById('theme-icon-light')?.classList.toggle('hidden', preference !== 'light');
+            document.getElementById('theme-icon-dark')?.classList.toggle('hidden', preference !== 'dark');
+            document.getElementById('theme-icon-system')?.classList.toggle('hidden', preference !== 'system');
+        }
+
+        function setTheme(preference) {
+            localStorage.setItem('theme', preference);
+            updateThemeUI(preference);
+            document.activeElement?.blur();
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const stored = localStorage.getItem('theme') || 'system';
+            updateThemeUI(stored);
+        });
+
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
+            const stored = localStorage.getItem('theme') || 'system';
+            if (stored === 'system') {
+                updateThemeUI('system');
+            }
+        });
+    </script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

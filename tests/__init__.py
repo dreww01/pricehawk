@@ -1,1 +1,1 @@
-# Tests package
+"""PriceHawk test suite."""

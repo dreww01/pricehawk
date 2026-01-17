@@ -16,23 +16,31 @@ class ShopifyHandler(BaseStoreHandler):
     platform_name = "shopify"
 
     async def detect(self, url: str) -> bool:
-        """Check if store is Shopify by testing /products.json endpoint."""
+        """Check if store is Shopify via API or HTML inspection."""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Fast path: try /products.json API
         try:
-            parsed = urlparse(url)
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-            products_url = f"{base_url}/products.json?limit=1"
-
             client = await self._get_client()
-            response = await client.get(products_url)
-
-            if response.status_code != 200:
-                return False
-
-            data = response.json()
-            return "products" in data
-
+            response = await client.get(f"{base_url}/products.json?limit=1")
+            if response.status_code == 200:
+                data = response.json()
+                if "products" in data:
+                    return True
         except Exception:
-            return False
+            pass
+
+        # Slow path: Playwright for Cloudflare-protected sites
+        try:
+            from app.services.scraper_service import fetch_with_playwright
+            html = await fetch_with_playwright(base_url)
+            if html:
+                return "cdn.shopify" in html or "Shopify.theme" in html
+        except Exception:
+            pass
+
+        return False
 
     async def fetch_products(
         self,

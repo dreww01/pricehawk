@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - PriceHawk{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
+            <p class="text-gray-500 dark:text-gray-400">Welcome back! Here's your price monitoring overview.</p>
+        </div>
+        <a href="/discover" class="inline-flex items-center px-4 py-2 bg-accent hover:bg-amber-600 text-white font-medium rounded-lg transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Discover Products
+        </a>
+    </div>
+
+    <!-- Stats -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Products -->
+        <a href="/tracked" class="block p-5 bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border hover:border-accent/50 transition-all hover:-translate-y-0.5">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Products</p>
+                    <p class="text-3xl font-bold text-accent mt-1" id="stat-products">
+                        <svg class="h-6 w-6 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">Tracked groups</p>
+                </div>
+                <div class="p-3 bg-amber-500/10 rounded-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                    </svg>
+                </div>
+            </div>
+        </a>
+
+        <!-- Competitors -->
+        <div class="p-5 bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Competitors</p>
+                    <p class="text-3xl font-bold text-violet-500 mt-1" id="stat-competitors">
+                        <svg class="h-6 w-6 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">URLs monitored</p>
+                </div>
+                <div class="p-3 bg-violet-500/10 rounded-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064" />
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- Alerts -->
+        <a href="/alerts/settings" class="block p-5 bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border hover:border-accent/50 transition-all hover:-translate-y-0.5">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Alerts</p>
+                    <p class="text-3xl font-bold text-amber-500 mt-1" id="stat-alerts">
+                        <svg class="h-6 w-6 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">This week</p>
+                </div>
+                <div class="p-3 bg-amber-500/10 rounded-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                    </svg>
+                </div>
+            </div>
+        </a>
+
+        <!-- Insights -->
+        <a href="/insights" class="block p-5 bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border hover:border-accent/50 transition-all hover:-translate-y-0.5">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Insights</p>
+                    <p class="text-3xl font-bold text-cyan-500 mt-1" id="stat-insights">
+                        <svg class="h-6 w-6 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                    </p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">AI generated</p>
+                </div>
+                <div class="p-3 bg-cyan-500/10 rounded-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Recent Products -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border">
+            <div class="p-5 border-b border-gray-200 dark:border-dark-border">
+                <h2 class="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                    </svg>
+                    Recent Products
+                </h2>
+            </div>
+            <div id="recent-products" class="p-2">
+                <div class="flex items-center justify-center py-8">
+                    <svg class="h-8 w-8 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                </div>
+            </div>
+            <div class="p-3 border-t border-gray-200 dark:border-dark-border">
+                <a href="/tracked" class="text-sm text-gray-500 dark:text-gray-400 hover:text-accent transition-colors">View all</a>
+            </div>
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border">
+            <div class="p-5 border-b border-gray-200 dark:border-dark-border">
+                <h2 class="flex items-center gap-2 font-semibold text-gray-900 dark:text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Recent Activity
+                </h2>
+            </div>
+            <div id="recent-activity" class="p-2">
+                <div class="flex items-center justify-center py-8">
+                    <svg class="h-8 w-8 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const token = getCookie('access_token');
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    async function loadDashboard() {
+        await Promise.all([
+            loadStats(),
+            loadRecentProducts(),
+            loadRecentActivity()
+        ]);
+    }
+
+    async function loadStats() {
+        try {
+            const response = await fetch('/api/dashboard/stats', { headers });
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('stat-products').textContent = data.products;
+                document.getElementById('stat-competitors').textContent = data.competitors;
+                document.getElementById('stat-alerts').textContent = data.alerts;
+                document.getElementById('stat-insights').textContent = data.insights;
+            } else {
+                setStatsError();
+            }
+        } catch (err) {
+            console.error('Failed to load stats:', err);
+            setStatsError();
+        }
+    }
+
+    function setStatsError() {
+        ['stat-products', 'stat-competitors', 'stat-alerts', 'stat-insights'].forEach(id => {
+            document.getElementById(id).textContent = '-';
+        });
+    }
+
+    async function loadRecentProducts() {
+        const container = document.getElementById('recent-products');
+        try {
+            const response = await fetch('/api/dashboard/products', { headers });
+            if (response.ok) {
+                const data = await response.json();
+                if (data.products.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center py-6">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                            </svg>
+                            <p class="text-gray-500 dark:text-gray-400 mb-3">No products tracked yet</p>
+                            <a href="/discover" class="inline-flex items-center px-3 py-1.5 text-sm bg-accent hover:bg-amber-600 text-white rounded-lg transition-colors">Discover Products</a>
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = data.products.map(p => `
+                        <a href="/tracked/${p.id}" class="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-dark-hover transition-colors">
+                            <div class="min-w-0 flex-1">
+                                <div class="font-medium text-gray-900 dark:text-white truncate">${escapeHtml(p.product_name)}</div>
+                                <div class="text-xs text-gray-500 dark:text-gray-400">${p.competitor_count} competitor${p.competitor_count !== 1 ? 's' : ''}</div>
+                            </div>
+                            <span class="ml-2 px-2 py-1 text-xs rounded-full ${p.is_active ? 'bg-green-500/10 text-green-500' : 'bg-gray-500/10 text-gray-500'}">${p.is_active ? 'Active' : 'Paused'}</span>
+                        </a>
+                    `).join('');
+                }
+            } else {
+                container.innerHTML = `<p class="text-red-500 text-sm py-4 px-3">Failed to load products</p>`;
+            }
+        } catch (err) {
+            console.error('Failed to load products:', err);
+            container.innerHTML = `<p class="text-red-500 text-sm py-4 px-3">Failed to load products</p>`;
+        }
+    }
+
+    async function loadRecentActivity() {
+        const container = document.getElementById('recent-activity');
+        try {
+            const response = await fetch('/api/dashboard/activity', { headers });
+            if (response.ok) {
+                const data = await response.json();
+                if (data.activity.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center py-6">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <p class="text-gray-500 dark:text-gray-400">No price changes detected yet</p>
+                            <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">Activity will appear here when prices change</p>
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = data.activity.map(a => {
+                        const isDrop = a.type === 'price_drop';
+                        const icon = isDrop
+                            ? `<svg class="h-4 w-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" /></svg>`
+                            : `<svg class="h-4 w-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>`;
+                        const changeText = a.change_percent ? `${isDrop ? '-' : '+'}${Math.abs(a.change_percent).toFixed(1)}%` : '';
+                        const priceText = a.new_price ? `$${a.new_price.toFixed(2)}` : 'N/A';
+                        const timeAgo = formatTimeAgo(a.detected_at);
+                        return `
+                            <a href="/tracked/${a.product_id}" class="flex items-start gap-3 p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-dark-hover transition-colors">
+                                <div class="mt-0.5">${icon}</div>
+                                <div class="flex-1 min-w-0">
+                                    <div class="font-medium text-gray-900 dark:text-white truncate">${escapeHtml(a.product_name)}</div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400">${escapeHtml(a.retailer)} &bull; ${priceText}</div>
+                                </div>
+                                <div class="text-right shrink-0">
+                                    <span class="px-2 py-0.5 text-xs rounded-full ${isDrop ? 'bg-green-500/10 text-green-500' : 'bg-red-500/10 text-red-500'}">${changeText}</span>
+                                    <div class="text-xs text-gray-400 dark:text-gray-500 mt-1">${timeAgo}</div>
+                                </div>
+                            </a>
+                        `;
+                    }).join('');
+                }
+            } else {
+                container.innerHTML = `<p class="text-red-500 text-sm py-4 px-3">Failed to load activity</p>`;
+            }
+        } catch (err) {
+            console.error('Failed to load activity:', err);
+            container.innerHTML = `<p class="text-red-500 text-sm py-4 px-3">Failed to load activity</p>`;
+        }
+    }
+
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function formatTimeAgo(dateStr) {
+        const date = new Date(dateStr);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return date.toLocaleDateString();
+    }
+
+    document.addEventListener('DOMContentLoaded', loadDashboard);
+</script>
+{% endblock %}

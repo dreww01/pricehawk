@@ -1,0 +1,43 @@
+{# HTMX partial for a single price history row #}
+{# Used in the competitor price history table #}
+
+<tr class="border-b border-gray-100 dark:border-dark-border/50 hover:bg-gray-50 dark:hover:bg-dark-hover">
+    <td class="py-3 px-4 text-sm text-gray-600 dark:text-gray-300">
+        {{ price.scraped_at.strftime('%b %d, %Y %H:%M') }}
+    </td>
+    <td class="py-3 px-4">
+        {% if price.price %}
+        <span class="font-mono text-gray-900 dark:text-white">{{ price.currency }} {{ "%.2f"|format(price.price) }}</span>
+        {% else %}
+        <span class="text-gray-400">-</span>
+        {% endif %}
+    </td>
+    <td class="py-3 px-4">
+        {% if price.scrape_status == 'success' %}
+        <span class="px-2 py-0.5 text-xs font-medium bg-green-500/10 text-green-500 rounded-full">Success</span>
+        {% else %}
+        <span class="px-2 py-0.5 text-xs font-medium bg-red-500/10 text-red-500 rounded-full" title="{{ price.error_message or 'Scrape failed' }}">Failed</span>
+        {% endif %}
+    </td>
+    {% if show_change and price_change is defined %}
+    <td class="py-3 px-4">
+        {% if price_change > 0 %}
+        <span class="text-red-500 flex items-center gap-1">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+            </svg>
+            +{{ "%.2f"|format(price_change) }}%
+        </span>
+        {% elif price_change < 0 %}
+        <span class="text-green-500 flex items-center gap-1">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+            {{ "%.2f"|format(price_change) }}%
+        </span>
+        {% else %}
+        <span class="text-gray-400">-</span>
+        {% endif %}
+    </td>
+    {% endif %}
+</tr>

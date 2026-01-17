@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}AI Insights - PriceHawk{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h1 class="text-2xl font-bold">AI Insights</h1>
+    </div>
+
+    <!-- Filter tabs -->
+    <div class="flex gap-1 p-1 bg-white dark:bg-dark-card rounded-lg border border-gray-200 dark:border-dark-border w-fit">
+        <button class="tab-btn px-4 py-2 text-sm rounded-md bg-accent text-white" data-filter="all">All</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover" data-filter="pattern">Patterns</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover" data-filter="alert">Alerts</button>
+        <button class="tab-btn px-4 py-2 text-sm rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover" data-filter="recommendation">Recommendations</button>
+    </div>
+
+    <!-- Loading state -->
+    <div id="loading-state" class="flex items-center justify-center py-12">
+        <svg class="h-8 w-8 animate-spin text-accent" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+    </div>
+
+    <!-- Error state -->
+    <div id="error-state" class="hidden">
+        <div class="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span id="error-message">Failed to load insights</span>
+        </div>
+    </div>
+
+    <!-- Empty state -->
+    <div id="empty-state" class="hidden text-center py-12">
+        <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 text-gray-300 dark:text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+        </svg>
+        <h3 class="mt-4 text-lg font-semibold text-gray-900 dark:text-white">No insights yet</h3>
+        <p class="mt-2 text-gray-500 dark:text-gray-400">AI insights are generated when you have price history data.</p>
+        <a href="/tracked" class="mt-4 inline-block px-4 py-2 bg-accent hover:bg-amber-600 text-white rounded-lg transition-colors">
+            View Tracked Products
+        </a>
+    </div>
+
+    <!-- Insights list -->
+    <div id="insights-list" class="hidden space-y-4"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const accessToken = document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1];
+    let allInsights = [];
+    let currentFilter = 'all';
+
+    const typeConfig = {
+        pattern: { label: 'Pattern', bgClass: 'bg-blue-500/10', textClass: 'text-blue-500' },
+        alert: { label: 'Alert', bgClass: 'bg-amber-500/10', textClass: 'text-amber-500' },
+        recommendation: { label: 'Recommendation', bgClass: 'bg-green-500/10', textClass: 'text-green-500' }
+    };
+
+    async function loadInsights() {
+        const loadingState = document.getElementById('loading-state');
+        const errorState = document.getElementById('error-state');
+        const emptyState = document.getElementById('empty-state');
+        const insightsList = document.getElementById('insights-list');
+
+        try {
+            const response = await fetch('/api/insights', {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (!response.ok) throw new Error('Failed to load insights');
+
+            const data = await response.json();
+            allInsights = data.insights;
+
+            loadingState.classList.add('hidden');
+
+            if (allInsights.length === 0) {
+                emptyState.classList.remove('hidden');
+            } else {
+                renderInsights();
+                insightsList.classList.remove('hidden');
+            }
+        } catch (error) {
+            loadingState.classList.add('hidden');
+            errorState.classList.remove('hidden');
+            document.getElementById('error-message').textContent = error.message;
+        }
+    }
+
+    function renderInsights() {
+        const insightsList = document.getElementById('insights-list');
+        const filtered = currentFilter === 'all'
+            ? allInsights
+            : allInsights.filter(i => i.insight_type === currentFilter);
+
+        if (filtered.length === 0) {
+            insightsList.innerHTML = `
+                <div class="text-center py-8 text-gray-500 dark:text-gray-400">
+                    No ${currentFilter} insights found.
+                </div>
+            `;
+            return;
+        }
+
+        insightsList.innerHTML = filtered.map(renderInsightCard).join('');
+    }
+
+    function renderInsightCard(insight) {
+        const config = typeConfig[insight.insight_type] || typeConfig.pattern;
+        const date = new Date(insight.generated_at).toLocaleDateString();
+        const time = new Date(insight.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        return `
+            <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+                <div class="flex items-start justify-between gap-4">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="px-2 py-0.5 text-xs font-medium rounded-full ${config.bgClass} ${config.textClass}">${config.label}</span>
+                            <span class="text-sm text-gray-400">${date} at ${time}</span>
+                        </div>
+                        <p class="text-gray-700 dark:text-gray-300">${escapeHtml(insight.insight_text)}</p>
+                    </div>
+                    <a href="/tracked/${insight.product_id}" class="p-2 text-gray-400 hover:text-accent shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                        </svg>
+                    </a>
+                </div>
+            </div>
+        `;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Tab filtering
+    document.querySelectorAll('.tab-btn').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab-btn').forEach(t => {
+                t.className = 'tab-btn px-4 py-2 text-sm rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover';
+            });
+            tab.className = 'tab-btn px-4 py-2 text-sm rounded-md bg-accent text-white';
+            currentFilter = tab.dataset.filter;
+            renderInsights();
+        });
+    });
+
+    loadInsights();
+</script>
+{% endblock %}

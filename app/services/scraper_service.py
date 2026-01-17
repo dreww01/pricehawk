@@ -1,6 +1,8 @@
 import asyncio
 import random
 import re
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -20,11 +22,9 @@ class ScrapeResult:
     error_message: str | None = None
 
 
-# Whitelisted domains
-ALLOWED_DOMAINS = {
-    "amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.ca",
-    "ebay.com", "ebay.co.uk", "ebay.de",
-    "walmart.com","neostore.ng"
+# Blocked internal domains (SSRF protection)
+BLOCKED_DOMAIN_SUFFIXES = {
+    ".local", ".localhost", ".internal", ".corp", ".lan", ".home", ".intranet"
 }
 
 # User agents for rotation
@@ -91,40 +91,72 @@ PRICE_SELECTORS = {
 }
 
 
+def normalize_url(url: str) -> tuple[str | None, str | None]:
+    """
+    Normalize URL: add https:// if missing, reject http://.
+    Returns (normalized_url, error_message).
+    """
+    url = url.strip()
+
+    if not url:
+        return None, "URL cannot be empty"
+
+    # Check for http:// (insecure)
+    if url.lower().startswith("http://"):
+        return None, "HTTP is not secure. Please use the HTTPS version of this URL (replace http:// with https://)"
+
+    # Add https:// if no scheme
+    if not url.startswith("https://"):
+        # Check if it looks like a domain (has a dot, no spaces)
+        if "." in url and " " not in url:
+            url = f"https://{url}"
+        else:
+            return None, "Invalid URL format. Please enter a valid product URL"
+
+    return url, None
+
+
 def validate_url(url: str) -> tuple[bool, str | None]:
-    """Validate URL against whitelist and block private IPs."""
+    """Validate URL for security (SSRF protection)."""
     try:
         parsed = urlparse(url)
 
         if parsed.scheme != "https":
-            return False, "Only HTTPS URLs allowed"
+            return False, "Only HTTPS URLs are allowed"
 
         hostname = parsed.hostname or ""
+        hostname_lower = hostname.lower()
 
-        # Block private IPs
+        # Block private/internal IPs (SSRF protection)
         private_patterns = [
             r"^localhost$",
-            r"^127\.",
-            r"^10\.",
-            r"^172\.(1[6-9]|2[0-9]|3[01])\.",
-            r"^192\.168\.",
-            r"^0\.",
+            r"^127\.",                          # Loopback
+            r"^10\.",                           # Private class A
+            r"^172\.(1[6-9]|2[0-9]|3[01])\.",   # Private class B
+            r"^192\.168\.",                     # Private class C
+            r"^0\.",                            # "This" network
+            r"^169\.254\.",                     # Link-local
+            r"^::1$",                           # IPv6 loopback
+            r"^fc[0-9a-f]{2}:",                 # IPv6 private
+            r"^fd[0-9a-f]{2}:",                 # IPv6 private
+            r"^fe80:",                          # IPv6 link-local
         ]
         for pattern in private_patterns:
-            if re.match(pattern, hostname):
-                return False, "Private/local URLs not allowed"
+            if re.match(pattern, hostname_lower):
+                return False, "Private or internal URLs are not allowed"
 
-        # Check whitelist
-        domain_match = any(
-            hostname == d or hostname.endswith(f".{d}")
-            for d in ALLOWED_DOMAINS
-        )
-        if not domain_match:
-            return False, f"Domain not in whitelist. Allowed: {', '.join(ALLOWED_DOMAINS)}"
+        # Block cloud metadata endpoints (AWS, GCP, Azure)
+        if hostname_lower in {"169.254.169.254", "metadata.google.internal"}:
+            return False, "Private or internal URLs are not allowed"
+
+        # Block internal domain suffixes
+        for suffix in BLOCKED_DOMAIN_SUFFIXES:
+            if hostname_lower.endswith(suffix):
+                return False, "Private or internal URLs are not allowed"
 
         return True, None
     except Exception as e:
-        return False, str(e)
+        return False, f"Invalid URL: {str(e)}"
 
 
 def get_retailer(url: str) -> str:
@@ -302,46 +334,107 @@ async def fetch_with_httpx(url: str, proxy: str | None = None) -> str | None:
         return response.text
 
 
-async def fetch_with_playwright(url: str, proxy: str | None = None) -> str | None:
-    """Fallback fetch using Playwright for JS-heavy sites."""
+# Thread pool for Windows sync Playwright fallback (lazy init)
+_playwright_executor: ThreadPoolExecutor | None = None
+
+
+def _get_playwright_executor() -> ThreadPoolExecutor:
+    """Get or create thread pool for sync Playwright."""
+    global _playwright_executor
+    if _playwright_executor is None:
+        _playwright_executor = ThreadPoolExecutor(max_workers=3)
+    return _playwright_executor
+    
+
+
+def _parse_proxy_config(proxy: str | None) -> dict | None:
+    """Parse proxy URL into Playwright config dict."""
+    if not proxy:
+        return None
+    parsed = urlparse(proxy)
+    return {
+        "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
+        "username": parsed.username,
+        "password": parsed.password,
+    }
+
+
+def _playwright_sync(url: str, proxy: str | None, user_agent: str) -> str | None:
+    """Sync Playwright fetch - used on Windows via thread pool."""
+    from playwright.sync_api import sync_playwright
+
+    proxy_config = _parse_proxy_config(proxy)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent=user_agent, proxy=proxy_config)
+        page = context.new_page()
+
+        try:
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)  # Wait for JS
+            return page.content()
+        finally:
+            browser.close()
+
+
+async def _playwright_async(url: str, proxy: str | None, user_agent: str) -> str | None:
+    """Async Playwright fetch - used on Linux/macOS."""
     from playwright.async_api import async_playwright
 
-    # Parse proxy URL
-    proxy_config = None
-    if proxy:
-        parsed = urlparse(proxy)
-        proxy_config = {
-            "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}",
-            "username": parsed.username,
-            "password": parsed.password,
-        }
+    proxy_config = _parse_proxy_config(proxy)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent=random.choice(USER_AGENTS),
-            proxy=proxy_config,
-        )
+        context = await browser.new_context(user_agent=user_agent, proxy=proxy_config)
         page = await context.new_page()
 
         try:
             await page.goto(url, timeout=30000, wait_until="domcontentloaded")
             await asyncio.sleep(2)  # Wait for JS
-            html = await page.content()
-            return html
+            return await page.content()
         finally:
             await browser.close()
+
+
+async def fetch_with_playwright(url: str, proxy: str | None = None) -> str | None:
+    """
+    Fallback fetch using Playwright for JS-heavy sites.
+    Uses sync Playwright on Windows (asyncio subprocess limitation),
+    async Playwright on Linux/macOS.
+    """
+    user_agent = random.choice(USER_AGENTS)
+
+    if sys.platform == "win32":
+        # Windows: run sync Playwright in thread pool
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            _get_playwright_executor(),
+            _playwright_sync,
+            url, proxy, user_agent
+        )
+    else:
+        # Linux/macOS: use async Playwright directly
+        return await _playwright_async(url, proxy, user_agent)
 
 
 async def scrape_url(url: str) -> ScrapeResult:
     """
     Scrape price from URL.
     Strategy:
-    1. Try each proxy with httpx
-    2. If no price, try each proxy with Playwright
-    3. Final fallback: direct connection (no proxy)
+    1. Normalize URL (add https:// if needed)
+    2. Validate URL for security
+    3. Try each proxy with httpx
+    4. If no price, try each proxy with Playwright
     """
-    # Validate URL
+    # Normalize URL (add https:// if missing)
+    normalized_url, norm_error = normalize_url(url)
+    if norm_error:
+        return ScrapeResult(price=None, currency="USD", status="failed", error_message=norm_error)
+
+    url = normalized_url  # Use normalized URL from here
+
+    # Validate URL for security
     is_valid, error = validate_url(url)
     if not is_valid:
         return ScrapeResult(price=None, currency="USD", status="failed", error_message=error)
@@ -379,7 +472,7 @@ async def scrape_url(url: str) -> ScrapeResult:
 
     return ScrapeResult(
         price=None, currency="USD", status="failed",
-        error_message=last_error or "Could not extract price from page"
+        error_message=last_error or "Could not extract price. This may not be a supported e-commerce store, or the product page structure is not recognized."
     )
 
 

@@ -97,7 +97,10 @@ pricehawk/
 │   │       ├── __init__.py
 │   │       ├── discovery.py       # POST /api/stores/discover, /track
 │   │       ├── products.py        # CRUD for tracking groups
-│   │       └── scraper.py         # POST /api/scrape/manual, /worker-health
+│   │       ├── scraper.py         # POST /api/scrape/manual, /worker-health
+│   │       ├── insights.py        # GET/POST /api/insights (AI analysis)
+│   │       ├── alerts.py          # Alert settings & history
+│   │       └── export.py          # CSV export
 │   │
 │   ├── core/
 │   │   ├── __init__.py
@@ -111,36 +114,43 @@ pricehawk/
 │   │
 │   ├── services/
 │   │   ├── __init__.py
-│   │   ├── store_discovery.py    # discover_products() orchestrator
-│   │   ├── store_detector.py     # detect_platform() logic
-│   │   ├── scraper_service.py    # Price extraction service
-│   │   └── stores/               # Handler plugins
+│   │   ├── store_discovery.py     # discover_products() orchestrator
+│   │   ├── store_detector.py      # detect_platform() logic
+│   │   ├── scraper_service.py     # Price extraction service
+│   │   ├── ai_service.py          # Groq AI integration
+│   │   ├── alert_service.py       # Alert detection logic
+│   │   ├── email_service.py       # Email sending (SMTP)
+│   │   └── stores/                # Handler plugins
 │   │       ├── __init__.py
-│   │       ├── base.py           # BaseStoreHandler (abstract)
-│   │       ├── shopify.py        # ShopifyHandler
-│   │       ├── woocommerce.py    # WooCommerceHandler
-│   │       ├── amazon.py         # AmazonHandler
-│   │       ├── ebay.py           # EbayHandler
-│   │       └── generic.py        # GenericHandler (fallback)
+│   │       ├── base.py            # BaseStoreHandler (abstract)
+│   │       ├── shopify.py         # ShopifyHandler
+│   │       ├── woocommerce.py     # WooCommerceHandler
+│   │       ├── amazon.py          # AmazonHandler
+│   │       ├── ebay.py            # EbayHandler
+│   │       └── generic.py         # GenericHandler (fallback)
 │   │
-│   └── tasks/
+│   ├── tasks/
+│   │   ├── __init__.py
+│   │   ├── celery_app.py          # Celery config + Beat schedule
+│   │   └── scraper_tasks.py       # Background tasks (scrape, alerts, cleanup)
+│   │
+│   └── tests/                     # Test suite
 │       ├── __init__.py
-│       ├── celery_app.py         # Celery config + Beat schedule
-│       └── scraper_tasks.py      # scrape_single_competitor(), scrape_all_products()
-│
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py               # Pytest fixtures
-│   ├── test_discovery.py         # Discovery endpoint tests
-│   ├── test_products.py          # Product CRUD tests
-│   └── test_scraper.py           # Scraper logic tests
+│       ├── conftest.py            # Pytest fixtures
+│       ├── test_health.py
+│       ├── test_products.py
+│       └── test_export.py
 │
 ├── main.py                        # FastAPI app creation + route registration
 ├── run.py                         # Development server (uvicorn)
 ├── pyproject.toml                 # UV dependencies
-├── .env                           # Environment variables (gitignored)
-├── .env.example                   # Template
+├── .env.example                   # Environment template
 ├── database_schema.sql            # Database setup SQL
+├── Dockerfile                     # Production container
+├── docker-compose.yml             # Service orchestration
+├── architecture.md                # This file
+├── logic_used.md                  # Complex algorithm explanations
+├── prd.md                         # Product requirements
 └── README.md                      # Setup instructions
 ```
 

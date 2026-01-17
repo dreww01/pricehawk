@@ -3,11 +3,11 @@ import io
 from datetime import datetime
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.security import get_current_user, CurrentUser
+from app.core.security import get_current_user, CurrentUser, verify_token_string
 from app.db.database import get_supabase_client
 
 
@@ -24,7 +24,6 @@ def _extract_domain(url: str) -> str:
 
 
 router = APIRouter(prefix="/export", tags=["export"])
-security = HTTPBearer()
 
 
 def _sanitize_filename(name: str) -> str:
@@ -66,6 +65,36 @@ def _generate_csv(rows: list[dict], product_name: str) -> io.StringIO:
     return output
 
 
+async def get_user_from_request(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+) -> tuple[CurrentUser, str]:
+    """Get user from Bearer token or cookie. Returns (user, token) tuple."""
+    token = None
+
+    if credentials:
+        token = credentials.credentials
+    else:
+        token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user = await verify_token_string(token)
+        return user, token
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 @router.get(
     "/{product_id}/csv",
     summary="Export price history to CSV",
@@ -78,13 +107,14 @@ def _generate_csv(rows: list[dict], product_name: str) -> io.StringIO:
         404: {"description": "Product not found"},
     },
 )
-def export_price_history_csv(
+async def export_price_history_csv(
     product_id: str,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    current_user: CurrentUser = Depends(get_current_user),
+    request: Request,
+    auth: tuple[CurrentUser, str] = Depends(get_user_from_request),
 ) -> StreamingResponse:
     """Export price history for a product as CSV."""
-    client = get_supabase_client(credentials.credentials)
+    current_user, token = auth
+    client = get_supabase_client(token)
 
     product_result = (
         client.table("products")

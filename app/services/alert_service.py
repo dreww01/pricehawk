@@ -5,11 +5,14 @@ Detects price changes after scraping and stores them as pending alerts
 for later inclusion in digest emails.
 """
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from app.db.database import get_supabase_client
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -111,6 +114,34 @@ class AlertService:
 
             # Get the second-to-last price (previous price before this scrape)
             old_price = Decimal(str(prev_response.data[1]["price"]))
+            old_currency = prev_response.data[1].get("currency", "USD")
+
+            # Currency mismatch check - create currency_changed alert instead of price alert
+            if old_currency != currency:
+                alert_data = {
+                    "user_id": user_id,
+                    "product_id": product["id"],
+                    "competitor_id": competitor_id,
+                    "alert_type": "currency_changed",
+                    "old_price": float(old_price),
+                    "new_price": float(new_price),
+                    "old_currency": old_currency,
+                    "new_currency": currency,
+                    "detected_at": datetime.now().isoformat()
+                }
+                sb.table("pending_alerts").insert(alert_data).execute()
+
+                logger.warning(
+                    f"Currency mismatch for competitor {competitor_id}: "
+                    f"{old_currency} → {currency}"
+                )
+
+                return {
+                    "alert_created": True,
+                    "alert_type": "currency_changed",
+                    "change_percent": None,
+                    "message": f"Currency changed: {old_currency} → {currency}"
+                }
 
             # Calculate change
             if old_price == 0:
@@ -255,14 +286,14 @@ class AlertService:
                     "old_price": Decimal(str(row["old_price"])),
                     "new_price": Decimal(str(row["new_price"])),
                     "price_change_percent": Decimal(str(row["price_change_percent"])),
-                    "currency": "USD",  # TODO: Get from competitor
+                    "currency": "USD",
                     "detected_at": row["detected_at"]
                 })
 
             return alerts
 
         except Exception as e:
-            print(f"Error fetching pending alerts: {e}")
+            logger.error(f"Error fetching pending alerts: {e}")
             return []
 
     async def mark_alerts_as_included(self, alert_ids: list[str]) -> bool:
@@ -285,7 +316,7 @@ class AlertService:
             return True
 
         except Exception as e:
-            print(f"Error marking alerts as included: {e}")
+            logger.error(f"Error marking alerts as included: {e}")
             return False
 
     async def cleanup_old_pending_alerts(self) -> int:
@@ -313,7 +344,7 @@ class AlertService:
             return len(response.data) if response.data else 0
 
         except Exception as e:
-            print(f"Error cleaning up old alerts: {e}")
+            logger.error(f"Error cleaning up old alerts: {e}")
             return 0
 
     async def get_users_due_for_digest(self) -> list[dict[str, Any]]:
@@ -384,5 +415,5 @@ class AlertService:
             return users_due
 
         except Exception as e:
-            print(f"Error getting users due for digest: {e}")
+            logger.error(f"Error getting users due for digest: {e}")
             return []

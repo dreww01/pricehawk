@@ -4,11 +4,13 @@ API endpoints for alert management.
 Handles user alert settings, pending alerts, alert history, and test emails.
 """
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from supabase import Client
 
 from app.core.security import get_current_user, CurrentUser
-from app.db.database import get_user_supabase_client
+from app.db.database import get_user_supabase_client, get_supabase_client
 from app.db.models import (
     AlertSettingsResponse,
     AlertSettingsUpdate,
@@ -21,6 +23,12 @@ from app.db.models import (
 from app.services.email_service import EmailService
 from app.services.alert_service import AlertService
 
+
+class AcceptCurrencyRequest(BaseModel):
+    """Request to accept a new currency for a competitor."""
+    currency: str
+
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 
@@ -92,9 +100,10 @@ async def get_alert_settings(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"Failed to get alert settings for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {str(e)}"
+            detail="Unable to load alert settings"
         )
 
 
@@ -173,9 +182,10 @@ async def update_alert_settings(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"Failed to update alert settings for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {str(e)}"
+            detail="Unable to save alert settings"
         )
 
 
@@ -192,7 +202,8 @@ async def get_pending_alerts(
             sb.table("pending_alerts")
             .select(
                 "id, alert_type, old_price, new_price, price_change_percent, detected_at, "
-                "products(product_name), competitors(retailer_name)"
+                "old_currency, new_currency, product_id, competitor_id, "
+                "products(product_name), competitors(retailer_name, url)"
             )
             .eq("user_id", current_user.id)
             .eq("included_in_digest", False)
@@ -203,14 +214,17 @@ async def get_pending_alerts(
         alerts = [
             PendingAlertResponse(
                 id=row["id"],
+                product_id=row["product_id"],
                 product_name=row["products"]["product_name"],
-                competitor_name=row["competitors"]["retailer_name"] or "Unknown Store",
+                competitor_id=row["competitor_id"],
+                competitor_url=row["competitors"]["url"],
                 alert_type=row["alert_type"],
                 old_price=row["old_price"],
                 new_price=row["new_price"],
                 price_change_percent=row["price_change_percent"],
-                currency="USD",  # TODO: Get from competitor
-                detected_at=row["detected_at"]
+                old_currency=row.get("old_currency"),
+                new_currency=row.get("new_currency"),
+                created_at=row["detected_at"]
             )
             for row in response.data
         ]
@@ -218,9 +232,10 @@ async def get_pending_alerts(
         return PendingAlertsListResponse(alerts=alerts, total=len(alerts))
 
     except Exception as e:
+        logger.exception(f"Failed to get pending alerts for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {str(e)}"
+            detail="Unable to load pending alerts"
         )
 
 
@@ -254,68 +269,186 @@ async def get_alert_history(
             for row in response.data
         ]
 
-        return AlertHistoryListResponse(history=history, total=len(history))
+        return AlertHistoryListResponse(alerts=history, total=len(history))
 
     except Exception as e:
+        logger.exception(f"Failed to get alert history for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {str(e)}"
+            detail="Unable to load alert history"
         )
 
 
 @router.post("/test")
 async def send_test_email(
     request: TestEmailRequest | None = None,
-    sb: Client = Depends(get_user_supabase_client),
     current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Send a test email to verify email configuration.
 
-    If email is not provided, sends to user's registered email.
+    If email is not provided, sends to user's registered email (from JWT).
     """
     try:
-        # Get target email
         target_email = request.email if request else None
 
         if not target_email:
-            # Fetch user's email from auth
-            user_response = (
-                sb.table("auth.users")
-                .select("email")
-                .eq("id", current_user.id)
-                .single()
-                .execute()
+            target_email = current_user.email
+
+        if not target_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No email address available"
             )
 
-            if not user_response.data or not user_response.data.get("email"):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No email found for user"
-                )
-
-            target_email = user_response.data["email"]
-
-        # Send test email
         email_service = EmailService()
+        logger.info(f"Sending test email to: {target_email}")
         result = email_service.send_test_email(target_email)
+        logger.info(f"Email result: {result}")
 
         if result["success"]:
             return {
                 "success": True,
-                "message": f"Test email sent to {target_email}",
+                "message": "Test email sent successfully",
                 "email": target_email
             }
         else:
+            logger.error(f"Failed to send test email to {target_email}: {result.get('error')}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to send test email: {result.get('error', 'Unknown error')}"
+                detail="Failed to send test email. Please check your email configuration."
             )
 
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"Error sending test email for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error sending test email: {str(e)}"
+            detail="Unable to send test email"
+        )
+
+
+@router.patch("/competitors/{competitor_id}/accept-currency")
+async def accept_currency(
+    competitor_id: str,
+    request: AcceptCurrencyRequest,
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """
+    Accept a new currency for a competitor after currency change detection.
+
+    Updates the competitor's expected_currency and dismisses the currency_changed alert.
+    """
+    try:
+        # Verify user owns this competitor (via product ownership)
+        comp_response = (
+            sb.table("competitors")
+            .select("id, product_id, products(user_id)")
+            .eq("id", competitor_id)
+            .execute()
+        )
+
+        if not comp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Competitor not found"
+            )
+
+        competitor = comp_response.data[0]
+        if competitor["products"]["user_id"] != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to modify this competitor"
+            )
+
+        # Update expected_currency using service client (bypasses RLS for update)
+        service_sb = get_supabase_client()
+        service_sb.table("competitors").update({
+            "expected_currency": request.currency
+        }).eq("id", competitor_id).execute()
+
+        # Dismiss any pending currency_changed alerts for this competitor
+        service_sb.table("pending_alerts").update({
+            "included_in_digest": True
+        }).eq("competitor_id", competitor_id).eq("alert_type", "currency_changed").execute()
+
+        return {
+            "success": True,
+            "message": f"Now tracking prices in {request.currency}",
+            "competitor_id": competitor_id,
+            "new_currency": request.currency
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to accept currency for competitor {competitor_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to update currency"
+        )
+
+
+@router.post("/accept-all-currencies")
+async def accept_all_currencies(
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """
+    Accept all pending currency changes for the current user.
+
+    Bulk operation to update all competitors with currency_changed alerts
+    to their new detected currencies.
+    """
+    try:
+        # Get all pending currency_changed alerts for this user
+        alerts_response = (
+            sb.table("pending_alerts")
+            .select("id, competitor_id, new_currency")
+            .eq("user_id", current_user.id)
+            .eq("alert_type", "currency_changed")
+            .eq("included_in_digest", False)
+            .execute()
+        )
+
+        if not alerts_response.data:
+            return {
+                "success": True,
+                "message": "No pending currency changes",
+                "updated_count": 0
+            }
+
+        service_sb = get_supabase_client()
+        updated_count = 0
+
+        for alert in alerts_response.data:
+            competitor_id = alert["competitor_id"]
+            new_currency = alert["new_currency"]
+
+            if new_currency:
+                # Update competitor's expected currency
+                service_sb.table("competitors").update({
+                    "expected_currency": new_currency
+                }).eq("id", competitor_id).execute()
+
+                # Mark alert as processed
+                service_sb.table("pending_alerts").update({
+                    "included_in_digest": True
+                }).eq("id", alert["id"]).execute()
+
+                updated_count += 1
+
+        return {
+            "success": True,
+            "message": f"Accepted {updated_count} currency changes",
+            "updated_count": updated_count
+        }
+
+    except Exception as e:
+        logger.exception(f"Failed to accept all currencies for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to accept currency changes"
         )

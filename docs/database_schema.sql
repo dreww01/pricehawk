@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS competitors (
   url TEXT NOT NULL,
   retailer_name VARCHAR(100),
   alert_threshold_percent DECIMAL(5,2) DEFAULT 10.00,
+  expected_currency VARCHAR(3) DEFAULT 'USD',
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -61,6 +62,59 @@ CREATE TABLE IF NOT EXISTS insights (
     generated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Tracking jobs table (background job progress tracking)
+CREATE TABLE IF NOT EXISTS tracking_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    product_group_id UUID REFERENCES products(id) ON DELETE CASCADE,
+    total_items INTEGER NOT NULL,
+    completed_items INTEGER DEFAULT 0,
+    failed_items INTEGER DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Pending alerts table (price change alerts awaiting digest)
+CREATE TABLE IF NOT EXISTS pending_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    competitor_id UUID NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
+    alert_type VARCHAR(20) NOT NULL CHECK (alert_type IN ('price_drop', 'price_increase', 'currency_changed')),
+    old_price DECIMAL(10, 2),
+    new_price DECIMAL(10, 2),
+    price_change_percent DECIMAL(5, 2),
+    threshold_percent DECIMAL(5, 2),
+    old_currency VARCHAR(3),
+    new_currency VARCHAR(3),
+    included_in_digest BOOLEAN DEFAULT FALSE,
+    detected_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- User alert settings table
+CREATE TABLE IF NOT EXISTS user_alert_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
+    email_enabled BOOLEAN DEFAULT TRUE,
+    digest_frequency_hours INTEGER DEFAULT 24,
+    alert_price_drop BOOLEAN DEFAULT TRUE,
+    alert_price_increase BOOLEAN DEFAULT TRUE,
+    last_digest_sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Alert history table (sent digest emails)
+CREATE TABLE IF NOT EXISTS alert_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    digest_sent_at TIMESTAMPTZ DEFAULT NOW(),
+    alerts_count INTEGER NOT NULL,
+    email_status VARCHAR(20) DEFAULT 'pending' CHECK (email_status IN ('pending', 'sent', 'failed')),
+    error_message TEXT
+);
+
 
 -- ---------------------------------------------------------------------------
 -- SECTION 2: Indexes for Performance
@@ -81,6 +135,23 @@ CREATE INDEX IF NOT EXISTS idx_price_history_status ON price_history(scrape_stat
 -- Insights indexes
 CREATE INDEX IF NOT EXISTS idx_insights_product_id ON insights(product_id);
 CREATE INDEX IF NOT EXISTS idx_insights_generated_at ON insights(generated_at DESC);
+
+-- Tracking jobs indexes
+CREATE INDEX IF NOT EXISTS idx_tracking_jobs_user_id ON tracking_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_tracking_jobs_status ON tracking_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_tracking_jobs_product_group_id ON tracking_jobs(product_group_id);
+
+-- Pending alerts indexes
+CREATE INDEX IF NOT EXISTS idx_pending_alerts_user_id ON pending_alerts(user_id);
+CREATE INDEX IF NOT EXISTS idx_pending_alerts_included ON pending_alerts(included_in_digest);
+CREATE INDEX IF NOT EXISTS idx_pending_alerts_detected_at ON pending_alerts(detected_at DESC);
+
+-- User alert settings indexes
+CREATE INDEX IF NOT EXISTS idx_user_alert_settings_user_id ON user_alert_settings(user_id);
+
+-- Alert history indexes
+CREATE INDEX IF NOT EXISTS idx_alert_history_user_id ON alert_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_alert_history_sent_at ON alert_history(digest_sent_at DESC);
 
 
 -- ---------------------------------------------------------------------------
@@ -114,6 +185,7 @@ ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE competitors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE price_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE insights ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tracking_jobs ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Products Table Policies
@@ -268,6 +340,28 @@ CREATE POLICY "Users can delete own insights"
 
 
 -- ---------------------------------------------------------------------------
+-- Tracking Jobs Table Policies
+-- ---------------------------------------------------------------------------
+
+-- Drop existing policies (idempotent)
+DROP POLICY IF EXISTS "Users can view own tracking jobs" ON tracking_jobs;
+DROP POLICY IF EXISTS "Service can manage tracking jobs" ON tracking_jobs;
+
+-- Create policies
+CREATE POLICY "Users can view own tracking jobs"
+    ON tracking_jobs
+    FOR SELECT
+    USING (user_id = auth.uid());
+
+-- Service role can insert/update tracking jobs (for background worker)
+CREATE POLICY "Service can manage tracking jobs"
+    ON tracking_jobs
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);
+
+
+-- ---------------------------------------------------------------------------
 -- SECTION 5: Verification Queries
 -- ---------------------------------------------------------------------------
 -- Run these to verify setup was successful:
@@ -313,5 +407,5 @@ WHERE event_object_table = 'products';
 -- 3. Test API endpoints with authentication
 -- 4. Verify RLS by trying to access data as different users
 --
--- See supabase_setup.md for detailed instructions
+-- See README.md for detailed instructions
 -- ============================================================================

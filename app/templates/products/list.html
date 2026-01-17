@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+
+{% block title %}Tracked Products - PriceHawk{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-white">Tracked Products</h1>
+        <a href="/discover" class="inline-flex items-center px-4 py-2 bg-accent hover:bg-amber-600 text-white font-medium rounded-lg transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Products
+        </a>
+    </div>
+
+    <!-- Loading state -->
+    <div id="loading-state" class="flex items-center justify-center py-12">
+        <svg class="h-8 w-8 spinner text-gray-400" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+    </div>
+
+    <!-- Error state -->
+    <div id="error-state" class="hidden">
+        <div class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500">
+            <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span id="error-message">Failed to load products</span>
+        </div>
+    </div>
+
+    <!-- Empty state -->
+    <div id="empty-state" class="hidden text-center py-12">
+        <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-16 w-16 text-gray-300 dark:text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+        </svg>
+        <h3 class="mt-4 text-lg font-semibold text-gray-900 dark:text-white">No products yet</h3>
+        <p class="mt-2 text-gray-500 dark:text-gray-400">Start tracking competitor prices by discovering products from any store.</p>
+        <a href="/discover" class="inline-flex items-center mt-4 px-4 py-2 bg-accent hover:bg-amber-600 text-white font-medium rounded-lg transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            Discover Products
+        </a>
+    </div>
+
+    <!-- Products grid -->
+    <div id="products-grid" class="hidden grid gap-4 sm:grid-cols-2 lg:grid-cols-3"></div>
+</div>
+
+<!-- Delete confirmation modal -->
+<div id="delete-modal" class="fixed inset-0 z-50 hidden">
+    <div class="fixed inset-0 bg-black/50" onclick="closeDeleteModal()"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Delete Product</h3>
+            <p class="mt-2 text-gray-500 dark:text-gray-400">Are you sure you want to delete "<span id="delete-product-name" class="font-medium text-gray-900 dark:text-white"></span>"? This will stop tracking all competitors.</p>
+            <div class="flex justify-end gap-3 mt-6">
+                <button onclick="closeDeleteModal()" class="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover rounded-lg transition-colors">Cancel</button>
+                <button id="confirm-delete-btn" class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit modal -->
+<div id="edit-modal" class="fixed inset-0 z-50 hidden">
+    <div class="fixed inset-0 bg-black/50" onclick="closeEditModal()"></div>
+    <div class="fixed inset-0 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-xl p-6 w-full max-w-md">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Edit Product</h3>
+            <div class="mt-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Product Name</label>
+                <input type="text" id="edit-product-name" class="w-full px-4 py-2.5 bg-gray-50 dark:bg-white/5 border border-gray-300 dark:border-dark-border rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent/50" placeholder="Product name" />
+            </div>
+            <div class="mt-4 flex items-center justify-between">
+                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Active</span>
+                <button type="button" id="edit-product-active" role="switch" class="relative inline-flex h-6 w-11 items-center rounded-full bg-gray-200 dark:bg-dark-border transition-colors" onclick="toggleSwitch(this)">
+                    <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform translate-x-1"></span>
+                </button>
+            </div>
+            <div class="flex justify-end gap-3 mt-6">
+                <button onclick="closeEditModal()" class="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover rounded-lg transition-colors">Cancel</button>
+                <button id="save-edit-btn" class="px-4 py-2 bg-accent hover:bg-amber-600 text-white rounded-lg transition-colors">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const accessToken = document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1];
+    let products = [];
+    let deleteProductId = null;
+    let editProductId = null;
+
+    function toggleSwitch(btn) {
+        const isOn = btn.classList.contains('bg-accent');
+        btn.classList.toggle('bg-accent', !isOn);
+        btn.classList.toggle('bg-gray-200', isOn);
+        btn.classList.toggle('dark:bg-dark-border', isOn);
+        btn.querySelector('span').classList.toggle('translate-x-6', !isOn);
+        btn.querySelector('span').classList.toggle('translate-x-1', isOn);
+        btn.dataset.checked = !isOn;
+    }
+
+    function setSwitch(btn, value) {
+        btn.classList.toggle('bg-accent', value);
+        btn.classList.toggle('bg-gray-200', !value);
+        btn.classList.toggle('dark:bg-dark-border', !value);
+        btn.querySelector('span').classList.toggle('translate-x-6', value);
+        btn.querySelector('span').classList.toggle('translate-x-1', !value);
+        btn.dataset.checked = value;
+    }
+
+    async function loadProducts() {
+        const loadingState = document.getElementById('loading-state');
+        const errorState = document.getElementById('error-state');
+        const emptyState = document.getElementById('empty-state');
+        const productsGrid = document.getElementById('products-grid');
+
+        try {
+            const response = await fetch('/api/tracked-products', {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (!response.ok) throw new Error('Failed to load products');
+
+            const data = await response.json();
+            products = data.products;
+
+            loadingState.classList.add('hidden');
+
+            if (products.length === 0) {
+                emptyState.classList.remove('hidden');
+            } else {
+                productsGrid.innerHTML = products.map(renderProductCard).join('');
+                productsGrid.classList.remove('hidden');
+            }
+        } catch (error) {
+            loadingState.classList.add('hidden');
+            errorState.classList.remove('hidden');
+            document.getElementById('error-message').textContent = error.message;
+        }
+    }
+
+    function renderProductCard(product) {
+        const competitorCount = product.competitors?.length || 0;
+        const createdDate = new Date(product.created_at).toLocaleDateString();
+        const statusBadge = product.is_active
+            ? '<span class="px-2 py-1 text-xs rounded-full bg-green-500/10 text-green-500">Active</span>'
+            : '<span class="px-2 py-1 text-xs rounded-full bg-gray-500/10 text-gray-500">Inactive</span>';
+
+        return `
+            <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border p-5 hover:border-accent/30 transition-colors" data-product-id="${product.id}">
+                <div class="flex items-start justify-between gap-2">
+                    <h2 class="font-semibold text-gray-900 dark:text-white line-clamp-2">${escapeHtml(product.product_name)}</h2>
+                    ${statusBadge}
+                </div>
+
+                <div class="mt-3 space-y-1.5 text-sm text-gray-500 dark:text-gray-400">
+                    <div class="flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                        </svg>
+                        <span>${competitorCount} competitor${competitorCount !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <span>Created ${createdDate}</span>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-end gap-2 mt-4 pt-4 border-t border-gray-200 dark:border-dark-border">
+                    <button class="p-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover rounded-lg transition-colors" onclick="openEditModal('${product.id}')">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                    </button>
+                    <button class="p-2 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors" onclick="openDeleteModal('${product.id}', '${escapeHtml(product.product_name).replace(/'/g, "\\'")}')">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                    </button>
+                    <a href="/tracked/${product.id}" class="inline-flex items-center px-3 py-1.5 bg-accent hover:bg-amber-600 text-white text-sm rounded-lg transition-colors">
+                        View
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        </svg>
+                    </a>
+                </div>
+            </div>
+        `;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function openDeleteModal(productId, productName) {
+        deleteProductId = productId;
+        document.getElementById('delete-product-name').textContent = productName;
+        document.getElementById('delete-modal').classList.remove('hidden');
+    }
+
+    function closeDeleteModal() {
+        document.getElementById('delete-modal').classList.add('hidden');
+        deleteProductId = null;
+    }
+
+    function openEditModal(productId) {
+        editProductId = productId;
+        const product = products.find(p => p.id === productId);
+        if (product) {
+            document.getElementById('edit-product-name').value = product.product_name;
+            setSwitch(document.getElementById('edit-product-active'), product.is_active);
+            document.getElementById('edit-modal').classList.remove('hidden');
+        }
+    }
+
+    function closeEditModal() {
+        document.getElementById('edit-modal').classList.add('hidden');
+        editProductId = null;
+    }
+
+    document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
+        if (!deleteProductId) return;
+
+        try {
+            const response = await fetch(`/api/tracked-products/${deleteProductId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (response.ok) {
+                closeDeleteModal();
+                loadProducts();
+            } else {
+                alert('Failed to delete product');
+            }
+        } catch (error) {
+            alert('Failed to delete product');
+        }
+    });
+
+    document.getElementById('save-edit-btn').addEventListener('click', async () => {
+        if (!editProductId) return;
+
+        const productName = document.getElementById('edit-product-name').value.trim();
+        const isActive = document.getElementById('edit-product-active').dataset.checked === 'true';
+
+        if (!productName) {
+            alert('Product name is required');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/tracked-products/${editProductId}`, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ product_name: productName, is_active: isActive })
+            });
+
+            if (response.ok) {
+                closeEditModal();
+                loadProducts();
+            } else {
+                alert('Failed to update product');
+            }
+        } catch (error) {
+            alert('Failed to update product');
+        }
+    });
+
+    loadProducts();
+</script>
+{% endblock %}

@@ -4,6 +4,11 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 
 
+
+# Maximum products for discovery and tracking
+MAX_PRODUCTS_LIMIT = 5000  
+
+
 # ---------------------------------------------------------------------------
 # Store Discovery Models
 # ---------------------------------------------------------------------------
@@ -22,16 +27,23 @@ class DiscoveredProductResponse(BaseModel):
 
 class StoreDiscoveryRequest(BaseModel):
     """Request to discover products from a store."""
-    url: str = Field(..., min_length=10, max_length=2048)
+    url: str = Field(..., min_length=3, max_length=2048)
     keyword: str | None = Field(None, max_length=100)
-    limit: int = Field(default=50, ge=1, le=250)
+    limit: int = Field(default=50, ge=1, le=MAX_PRODUCTS_LIMIT)
 
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: str) -> str:
         v = v.strip()
+        # Reject http:// explicitly (insecure)
+        if v.lower().startswith("http://"):
+            raise ValueError("HTTP is not secure. Please use HTTPS or enter the domain without a protocol")
+        # Normalize: add https:// if no scheme
         if not v.startswith("https://"):
-            raise ValueError("URL must use HTTPS")
+            if "." in v and " " not in v:
+                v = f"https://{v}"
+            else:
+                raise ValueError("Invalid URL format")
         return v
 
 
@@ -44,10 +56,17 @@ class StoreDiscoveryResponse(BaseModel):
     error: str | None = None
 
 
+class TrackProductItem(BaseModel):
+    """Single product to track with pre-fetched price data."""
+    url: str
+    price: Decimal | None = None
+    currency: str = "USD"
+
+
 class TrackProductsRequest(BaseModel):
     """Request to add discovered products to tracking."""
     group_name: str = Field(..., min_length=1, max_length=255)
-    product_urls: list[str] = Field(..., min_length=1, max_length=50)
+    products: list[TrackProductItem] = Field(..., min_length=1, max_length=MAX_PRODUCTS_LIMIT)
     alert_threshold_percent: Decimal = Field(default=Decimal("10.00"), ge=0, le=100)
 
 
@@ -56,6 +75,7 @@ class TrackProductsResponse(BaseModel):
     group_id: str
     group_name: str
     products_added: int
+    prices_stored: int
 
 
 # ---------------------------------------------------------------------------
@@ -190,3 +210,101 @@ class ChartDataResponse(BaseModel):
     date_range_start: datetime | None
     date_range_end: datetime | None
     total_data_points: int
+
+
+# ---------------------------------------------------------------------------
+# Initial Price Scraping Models
+# ---------------------------------------------------------------------------
+class InitialPriceResult(BaseModel):
+    """Result of initial price scraping for a competitor URL."""
+    url: str
+    price: Decimal | None
+    currency: str = "USD"
+    status: str  # 'success' or 'failed'
+    error_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Alert Models
+# ---------------------------------------------------------------------------
+class AlertSettingsResponse(BaseModel):
+    """User's alert settings."""
+    user_id: str
+    email_enabled: bool = True
+    digest_frequency: str = "daily"  # 'immediate', 'daily', 'weekly'
+    alert_on_price_drop: bool = True
+    alert_on_price_increase: bool = True
+    alert_threshold_percent: Decimal = Decimal("5.00")
+
+
+class AlertSettingsUpdate(BaseModel):
+    """Request to update alert settings."""
+    email_enabled: bool | None = None
+    digest_frequency: str | None = None
+    alert_on_price_drop: bool | None = None
+    alert_on_price_increase: bool | None = None
+    alert_threshold_percent: Decimal | None = None
+
+
+class PendingAlertResponse(BaseModel):
+    """A pending alert that hasn't been sent yet."""
+    id: str
+    product_id: str
+    product_name: str
+    competitor_id: str
+    competitor_url: str
+    old_price: Decimal | None
+    new_price: Decimal | None
+    price_change_percent: Decimal | None
+    alert_type: str  # 'price_drop', 'price_increase', 'currency_changed'
+    old_currency: str | None = None
+    new_currency: str | None = None
+    created_at: datetime
+
+
+class PendingAlertsListResponse(BaseModel):
+    """List of pending alerts."""
+    alerts: list[PendingAlertResponse]
+    total: int
+
+
+class AlertHistoryResponse(BaseModel):
+    """A sent alert in history."""
+    id: str
+    product_id: str
+    product_name: str
+    alert_type: str
+    message: str
+    sent_at: datetime
+    email_status: str  # 'sent', 'failed', 'pending'
+
+
+class AlertHistoryListResponse(BaseModel):
+    """List of alert history."""
+    alerts: list[AlertHistoryResponse]
+    total: int
+
+
+class TestEmailRequest(BaseModel):
+    """Request to send a test email."""
+    email: str | None = None  # If None, use user's email
+
+
+# ---------------------------------------------------------------------------
+# Manual Scrape Task Models (SSE)
+# ---------------------------------------------------------------------------
+class ScrapeTaskResponse(BaseModel):
+    """Response when manual scrape task is queued."""
+    task_id: str
+    status: str = "queued"
+    message: str = "Scrape task queued"
+
+
+class ScrapeProgressResponse(BaseModel):
+    """Progress update from scrape task (SSE event data)."""
+    status: str  # 'queued', 'scraping', 'completed', 'error'
+    completed: int = 0
+    total: int = 0
+    current: str | None = None  # Current retailer being scraped
+    results: list[dict] = []  # Completed results so far
+    error: str | None = None
