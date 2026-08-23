@@ -308,3 +308,29 @@ class ScrapeProgressResponse(BaseModel):
     current: str | None = None  # Current retailer being scraped
     results: list[dict] = []  # Completed results so far
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Health Models
+# ---------------------------------------------------------------------------
+class HealthResponse(BaseModel):
+    """Schema for system health and service availability response."""
+    status: str = Field(
+        ...,
+        description="Overall service health status ('ok' or 'error')",
+        examples=["ok"],
+    )
+    timestamp: datetime = Field(
+        ...,
+        description="Current server UTC timestamp",
+    )
+    database: str = Field(
+        ...,
+        description="Database connectivity state ('connected' or 'disconnected')",
+        examples=["connected"],
+    )
+    error: str | None = Field(
+        default=None,
+        description="Detailed diagnostic error message if any component is unhealthy",
+    )
+

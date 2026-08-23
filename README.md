@@ -131,7 +131,7 @@ uv run celery -A app.tasks.celery_app beat --loglevel=info
 
 ```bash
 curl http://localhost:8000/api/health
-# {"status":"healthy"}
+# {"status":"ok","timestamp":"2025-01-01T00:00:00Z","database":"connected","error":null}
 ```
 
 API Documentation: http://localhost:8000/api/docs

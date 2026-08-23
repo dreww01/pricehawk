@@ -14,7 +14,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from slowapi.errors import RateLimitExceeded
 
-from app.api.routes import auth, tracked_products, scraper, discovery, insights, alerts, export, charts, pages, account
+from app.api.routes import (
+    account,
+    alerts,
+    auth,
+    charts,
+    discovery,
+    export,
+    health,
+    insights,
+    pages,
+    scraper,
+    tracked_products,
+)
 from app.core.config import get_settings
 from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 
@@ -99,6 +111,8 @@ app.include_router(alerts.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(charts.router, prefix="/api")
 app.include_router(account.router, prefix="/api")
+app.include_router(health.router, prefix="/api")
+app.include_router(health.router)
 
 # Page routes (HTML templates)
 app.include_router(pages.router)
@@ -129,12 +143,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 def root():
     """Redirect root to dashboard or login."""
     return RedirectResponse(url="/dashboard")
-
-
-@app.get("/api/health")
-def health_check() -> dict:
-    """Health check endpoint."""
-    return {"status": "healthy"}
 
 
 @app.exception_handler(404)

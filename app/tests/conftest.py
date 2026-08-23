@@ -1,5 +1,13 @@
 """Pytest fixtures for PriceHawk tests."""
 
+import os
+
+# Set fallback environment variables for test execution
+os.environ.setdefault("SB_URL", "https://test.supabase.co")
+os.environ.setdefault("SB_ANON_KEY", "test-anon-key")
+os.environ.setdefault("SB_SERVICE_KEY", "test-service-key")
+os.environ.setdefault("SB_JWT_SECRET", "test-jwt-secret")
+
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
