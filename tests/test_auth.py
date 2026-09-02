@@ -58,4 +58,4 @@ def test_reset_password_missing_fields(client):
 def test_me_endpoint_requires_auth(client):
     """Test /me endpoint requires authentication."""
     response = client.get("/api/auth/me")
-    assert response.status_code == 403
+    assert response.status_code == 401
