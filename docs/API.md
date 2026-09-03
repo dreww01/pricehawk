@@ -2,838 +2,635 @@
 
 ## Overview
 
-The PriceHawk REST API provides programmatic access to automated competitor discovery, price tracking, distributed background scraping, Groq AI insights, and alert dispatch management.
+The PriceHawk REST API exposes the routes registered by the FastAPI application in `main.py`. This guide is reconciled with the generated OpenAPI schema at `/api/openapi.json`; endpoints not listed here are not live APIs.
 
-All API routes (with the exception of `/api/health`, public authentication, and public web pages) require an authenticated **Bearer JWT Token** issued by Supabase Auth.
+- **Base URL**: `http://localhost:8000` (dev) / `https://your-domain.railway.app` (prod)
+- **Swagger UI**: `/api/docs`
+- **ReDoc**: `/api/redoc`
+- **OpenAPI schema**: `/api/openapi.json`
 
-- **Base URL**: `http://localhost:8000` (Dev) / `https://your-domain.railway.app` (Prod)
-- **Interactive OpenAPI Documentation**: `/api/docs` (Swagger UI) and `/api/redoc` (ReDoc)
-- **OpenAPI Schema Definition**: `/api/openapi.json`
+All `/api/*` routes require a valid Supabase Bearer token unless the endpoint explicitly says otherwise. Browser helper endpoints that accept an `access_token` cookie are called out separately.
 
----
+## Global Request and Error Conventions
 
-## Global Standards & Error Model
+### Standard JSON Headers
 
-### Standard Request Headers
 ```http
 Authorization: Bearer <supabase_jwt_access_token>
 Content-Type: application/json
 Accept: application/json
 ```
 
-### Rate Limiting Limits (`slowapi`)
-The API enforces rate limits on client IP addresses. When exceeded, the API responds with HTTP 429:
+### Common Error Responses
 
-| Scope | Limit | Header / Details |
+FastAPI automatically returns `422 Unprocessable Entity` for request-body, path, and query validation errors:
+
+```json
+{"detail":[{"loc":["body","email"],"msg":"value is not a valid email address","type":"value_error"}]}
+```
+
+Authenticated routes can also return:
+
+| Status | Meaning | Example |
 |---|---|---|
-| **Authentication Endpoints** (`/api/auth/*`) | `5 requests / minute` | Mitigates brute-force credential stuffing |
-| **Scraper Triggers** (`/api/scraper/scrape/*`) | `10 requests / minute` | Protects background queue capacity |
-| **Standard API Endpoints** | `100 requests / minute` | General API abuse protection |
+| `400 Bad Request` | Business rule or upstream service failure | `{"detail":"Unable to create account. Please try again."}` |
+| `401 Unauthorized` | Missing, invalid, or expired token | `{"detail":"Invalid or expired token"}` |
+| `403 Forbidden` | Authenticated user cannot access resource | `{"detail":"Not authorized to modify this competitor"}` |
+| `404 Not Found` | Resource not found or hidden by tenant scoping | `{"detail":"Product not found"}` |
+| `429 Too Many Requests` | Rate limit exceeded | `{"error":"Rate limit exceeded: 5 per 1 minute"}` |
+| `500 Internal Server Error` | Masked server exception | `{"detail":"An unexpected error occurred. Please try again.","error_id":"a4df02e0"}` |
 
-### Standard HTTP Status & Error Codes
+### Rate Limits
 
-| Status Code | Description | Response Model |
-|---|---|---|
-| **200 OK** | Successful retrieval, update, or execution | JSON Object / Array / Stream |
-| **201 Created** | Entity successfully created | JSON Object |
-| **400 Bad Request** | Business logic violation, invalid parameter | `{"detail": "Error message"}` |
-| **401 Unauthorized** | Missing, invalid, or expired JWT Bearer token | `{"detail": "Invalid or expired token"}` |
-| **403 Forbidden** | Authenticated user lacks permission for resource | `{"detail": "Access denied"}` |
-| **404 Not Found** | Target resource ID does not exist or belongs to another tenant | `{"detail": "Product not found"}` |
-| **422 Unprocessable Entity** | Pydantic schema validation error on input payload | `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}` |
-| **429 Too Many Requests** | Rate limit exceeded | `{"error": "Rate limit exceeded: 5 per 1 minute"}` |
-| **500 Internal Server Error** | Unexpected server-side exception with masked diagnostic ID | `{"detail": "An unexpected error occurred...", "error_id": "a4df02e0"}` |
+| Scope | Limit |
+|---|---|
+| `/api/auth/login`, `/api/auth/signup`, `/api/auth/forgot-password`, `/api/auth/verify-reset-otp`, `/api/auth/reset-password` | 5 requests/minute |
+| `/api/scraper/scrape/manual/{product_id}` | 10 requests/minute |
+| Other routes | Standard application/global limits when configured |
+
+## Registered `/api` Route Inventory
+
+This is the live API route list generated from the application router configuration:
+
+| Method | Route | Auth | Primary success status |
+|---|---|---:|---:|
+| `POST` | `/api/auth/login` | No | `200` |
+| `POST` | `/api/auth/signup` | No | `200` |
+| `GET` | `/api/auth/me` | Yes | `200` |
+| `POST` | `/api/auth/forgot-password` | No | `200` |
+| `POST` | `/api/auth/verify-reset-otp` | No | `200` |
+| `POST` | `/api/auth/reset-password` | No | `200` |
+| `GET` | `/api/tracked-products` | Yes | `200` |
+| `GET` | `/api/tracked-products/{product_id}` | Yes | `200` |
+| `PUT` | `/api/tracked-products/{product_id}` | Yes | `200` |
+| `DELETE` | `/api/tracked-products/{product_id}` | Yes | `204` |
+| `POST` | `/api/scraper/scrape/manual/{product_id}` | Yes | `202` |
+| `GET` | `/api/scraper/scrape/stream/{task_id}` | No | `200` |
+| `GET` | `/api/scraper/prices/{product_id}/history` | Yes | `200` |
+| `GET` | `/api/scraper/prices/latest/{competitor_id}` | Yes | `200` |
+| `GET` | `/api/scraper/prices/{product_id}/chart-data` | Yes | `200` |
+| `GET` | `/api/scraper/scrape/worker-health` | No | `200` |
+| `POST` | `/api/stores/discover` | Yes | `200` |
+| `POST` | `/api/stores/track` | Yes | `201` |
+| `GET` | `/api/insights/{product_id}` | Yes | `200` |
+| `POST` | `/api/insights/generate/{product_id}` | Yes | `200` |
+| `GET` | `/api/alerts/settings` | Yes | `200` |
+| `PUT` | `/api/alerts/settings` | Yes | `200` |
+| `GET` | `/api/alerts/pending` | Yes | `200` |
+| `GET` | `/api/alerts/history` | Yes | `200` |
+| `POST` | `/api/alerts/test` | Yes | `200` |
+| `PATCH` | `/api/alerts/competitors/{competitor_id}/accept-currency` | Yes | `200` |
+| `POST` | `/api/alerts/accept-all-currencies` | Yes | `200` |
+| `GET` | `/api/export/{product_id}/csv` | Bearer or cookie | `200` |
+| `GET` | `/api/charts/{product_id}` | Yes | `200` |
+| `POST` | `/api/account/change-password` | Yes | `200` |
+| `POST` | `/api/account/change-email` | Yes | `200` |
+| `GET` | `/api/account/settings` | Yes | `200` |
+| `DELETE` | `/api/account/delete` | Yes | `200` |
+| `GET` | `/api/dashboard/stats` | Yes | `200` |
+| `GET` | `/api/dashboard/activity` | Yes | `200` |
+| `GET` | `/api/dashboard/products` | Yes | `200` |
+| `GET` | `/api/insights` | Yes | `200` |
+| `GET` | `/api/health` | No | `200` |
+
+> Not live: `/api/auth/refresh`, `/api/products/*`, `/api/competitors/*`, and `/api/products/{id}/competitors` are not registered in the current FastAPI application. Use `/api/tracked-products/*` for tracked-product management and `/api/stores/track` to create a product group with competitor URLs.
 
 ---
 
-## 1. Authentication Endpoints (`/api/auth`)
+## 1. Authentication (`/api/auth`)
 
-### 1.1 User Login
-Authenticates an existing user and returns Supabase session tokens.
+### 1.1 Login
+
 - **Method / Route**: `POST /api/auth/login`
-- **Rate Limit**: 5/minute
 - **Auth Required**: No
+- **Success**: `200 OK`
+- **Request model**: `LoginRequest`
 
-**Request Body:**
 ```json
-{
-  "email": "user@example.com",
-  "password": "SecurePassword123!"
-}
+{"email":"user@example.com","password":"SecurePassword123!"}
 ```
 
-**Response (200 OK):**
+**Response model**: `AuthResponse`
+
 ```json
-{
-  "access_token": "eyJhbGciOiJFUzI1NiIs...",
-  "token_type": "bearer",
-  "user": {
-    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "email": "user@example.com"
-  }
-}
+{"access_token":"eyJhbGciOi...","token_type":"bearer","user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email":"user@example.com"}
 ```
 
----
+### 1.2 Signup
 
-### 1.2 User Registration
-Registers a new user account in Supabase Identity.
 - **Method / Route**: `POST /api/auth/signup`
-- **Rate Limit**: 5/minute
 - **Auth Required**: No
+- **Success**: `200 OK`
+- **Request model**: `SignupRequest`
 
-**Request Body:**
 ```json
-{
-  "email": "newuser@example.com",
-  "password": "SecurePassword123!"
-}
+{"email":"newuser@example.com","password":"SecurePassword123!"}
 ```
 
-**Response (200 OK):**
+**Response example**:
+
 ```json
-{
-  "message": "Account created successfully. Please check your email to confirm your account."
-}
+{"message":"Account created successfully","user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email":"newuser@example.com","email_confirmed":false}
 ```
 
----
+### 1.3 Forgot Password
 
-### 1.3 Step 1: Request Password Reset OTP
-Initiates a 3-step secure password reset process by dispatching a 6-digit OTP code to the user's email.
 - **Method / Route**: `POST /api/auth/forgot-password`
-- **Rate Limit**: 5/minute
 - **Auth Required**: No
+- **Success**: `200 OK`
+- **Request model**: `ForgotPasswordRequest`
 
-**Request Body:**
 ```json
-{
-  "email": "user@example.com"
-}
+{"email":"user@example.com"}
 ```
 
-**Response (200 OK):**
+**Response example**:
+
 ```json
-{
-  "message": "Password reset code sent. Check your email."
-}
+{"message":"If an account exists with this email, a reset code has been sent."}
 ```
 
----
+### 1.4 Verify Reset OTP
 
-### 1.4 Step 2: Verify Reset OTP Code
-Verifies the 6-digit OTP token and issues a scoped `reset_token`.
 - **Method / Route**: `POST /api/auth/verify-reset-otp`
-- **Rate Limit**: 5/minute
 - **Auth Required**: No
+- **Success**: `200 OK`
+- **Request model**: `VerifyResetOTPRequest`
 
-**Request Body:**
 ```json
-{
-  "email": "user@example.com",
-  "otp": "654321"
-}
+{"email":"user@example.com","otp":"654321"}
 ```
 
-**Response (200 OK):**
+**Response example**:
+
 ```json
-{
-  "message": "Code verified successfully",
-  "reset_token": "eyJhbGciOiJFUzI1NiIs..."
-}
+{"message":"Code verified successfully","reset_token":"eyJhbGciOi..."}
 ```
 
----
+### 1.5 Reset Password
 
-### 1.5 Step 3: Complete Password Reset
-Consumes the `reset_token` and applies the new password.
 - **Method / Route**: `POST /api/auth/reset-password`
-- **Rate Limit**: 5/minute
 - **Auth Required**: No
+- **Success**: `200 OK`
+- **Request model**: `ResetPasswordRequest`
 
-**Request Body:**
 ```json
-{
-  "reset_token": "eyJhbGciOiJFUzI1NiIs...",
-  "new_password": "BrandNewSecurePassword123!"
-}
+{"reset_token":"eyJhbGciOi...","new_password":"BrandNewSecurePassword123!"}
 ```
 
-**Response (200 OK):**
+**Response example**:
+
 ```json
-{
-  "message": "Password has been reset successfully."
-}
+{"message":"Password has been reset successfully. You can now log in."}
 ```
 
----
+### 1.6 Current User
 
-### 1.6 Refresh Authentication Token
-Refreshes an expired access token using a valid refresh token.
-- **Method / Route**: `POST /api/auth/refresh`
-- **Rate Limit**: 5/minute
-- **Auth Required**: No
-
-**Request Body:**
-```json
-{
-  "refresh_token": "supabase_refresh_token_string"
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "access_token": "eyJhbGciOiJFUzI1NiIs...",
-  "refresh_token": "new_refresh_token_string",
-  "token_type": "bearer"
-}
-```
-
----
-
-### 1.7 Current User Identity
-Inspects the claims of the currently authenticated Bearer token.
 - **Method / Route**: `GET /api/auth/me`
-- **Rate Limit**: 100/minute
-- **Auth Required**: Yes (`Bearer Token`)
-
-**Response (200 OK):**
-```json
-{
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "email": "user@example.com",
-  "role": "authenticated"
-}
-```
-
----
-
-## 2. Account Management Endpoints (`/api/account`)
-
-### 2.1 Get Account Details
-- **Method / Route**: `GET /api/account/settings`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `CurrentUser`
 
-**Response (200 OK):**
 ```json
-{
-  "user_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "email": "user@example.com"
-}
+{"id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email":"user@example.com","role":"authenticated"}
 ```
 
 ---
 
-### 2.2 Change Password
-- **Method / Route**: `POST /api/account/change-password`
+## 2. Tracked Products (`/api/tracked-products`)
+
+Tracked products are product groups with zero or more competitor URLs attached. There is no live `/api/products` router in this application.
+
+### 2.1 List Tracked Products
+
+- **Method / Route**: `GET /api/tracked-products`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `ProductListResponse`
 
-**Request Body:**
 ```json
-{
-  "current_password": "OldPassword123!",
-  "new_password": "NewSecurePassword456!"
-}
+{"products":[{"id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","is_active":true,"created_at":"2025-01-10T12:00:00Z","updated_at":"2025-01-10T12:00:00Z","competitors":[{"id":"9ca85f64-5717-4562-b3fc-2c963f66afc1","url":"https://example-store.myshopify.com/products/pro-laptop-14","retailer_name":"example-store.myshopify.com","alert_threshold_percent":"10.00","created_at":"2025-01-10T12:00:00Z"}]}],"total":1}
 ```
 
-**Response (200 OK):**
-```json
-{
-  "message": "Password updated successfully"
-}
-```
+### 2.2 Get Tracked Product
 
----
-
-### 2.3 Request Email Change
-- **Method / Route**: `POST /api/account/change-email`
+- **Method / Route**: `GET /api/tracked-products/{product_id}`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `ProductResponse`
 
-**Request Body:**
 ```json
-{
-  "new_email": "updated-email@example.com"
-}
+{"id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","is_active":true,"created_at":"2025-01-10T12:00:00Z","updated_at":"2025-01-10T12:00:00Z","competitors":[]}
 ```
 
-**Response (200 OK):**
-```json
-{
-  "message": "Verification email sent to your new address. Please check your inbox."
-}
-```
+### 2.3 Update Tracked Product
 
----
-
-### 2.4 Delete Account & Cascade Data
-Permanently purges the authenticated user and cascades deletes across products, competitors, price history, insights, and alerts.
-- **Method / Route**: `DELETE /api/account/delete`
+- **Method / Route**: `PUT /api/tracked-products/{product_id}`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `ProductUpdate`
 
-**Response (200 OK):**
 ```json
-{
-  "message": "Account data deleted successfully. Please log out."
-}
+{"product_name":"Enterprise Ultrabooks 2025","is_active":true}
 ```
+
+**Response model**: `ProductResponse`
+
+```json
+{"id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Enterprise Ultrabooks 2025","is_active":true,"created_at":"2025-01-10T12:00:00Z","updated_at":"2025-01-10T14:30:00Z","competitors":[]}
+```
+
+### 2.4 Delete Tracked Product
+
+- **Method / Route**: `DELETE /api/tracked-products/{product_id}`
+- **Auth Required**: Yes
+- **Success**: `204 No Content`
+- **Response body**: empty
 
 ---
 
-## 3. Store Discovery & Tracking Endpoints (`/api/stores`)
+## 3. Store Discovery and Tracking (`/api/stores`)
 
-### 3.1 Discover Products from Store URL
-Probes and extracts products from a target store using auto-detected platform engines (Shopify, WooCommerce, Generic).
+### 3.1 Discover Products
+
 - **Method / Route**: `POST /api/stores/discover`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `StoreDiscoveryRequest`
 
-**Request Body:**
 ```json
-{
-  "url": "https://example-store.myshopify.com",
-  "keyword": "laptop",
-  "limit": 50
-}
+{"url":"https://example-store.myshopify.com","keyword":"laptop","limit":50}
 ```
 
-**Response (200 OK):**
+**Response model**: `StoreDiscoveryResponse`
+
 ```json
-{
-  "platform": "shopify",
-  "store_url": "https://example-store.myshopify.com",
-  "total_found": 1,
-  "products": [
-    {
-      "name": "Pro Laptop 14 - Space Gray",
-      "price": "1499.00",
-      "currency": "USD",
-      "image_url": "https://example-store.myshopify.com/cdn/image.jpg",
-      "product_url": "https://example-store.myshopify.com/products/pro-laptop-14",
-      "platform": "shopify",
-      "variant_id": "40123984",
-      "sku": "LAP-14-SG",
-      "in_stock": true
-    }
-  ],
-  "error": null
-}
+{"platform":"shopify","store_url":"https://example-store.myshopify.com","total_found":1,"products":[{"name":"Pro Laptop 14 - Space Gray","price":"1499.00","currency":"USD","image_url":"https://example-store.myshopify.com/cdn/image.jpg","product_url":"https://example-store.myshopify.com/products/pro-laptop-14","platform":"shopify","variant_id":"40123984","sku":"LAP-14-SG","in_stock":true}],"error":null}
 ```
 
----
+### 3.2 Track Discovered Products
 
-### 3.2 Track Discovered Products (Immediate Price Reuse)
-Creates a product tracking group and persists competitors along with prices discovered during the exploration step.
 - **Method / Route**: `POST /api/stores/track`
 - **Auth Required**: Yes
+- **Success**: `201 Created`
+- **Request model**: `TrackProductsRequest`
 
-**Request Body:**
 ```json
-{
-  "group_name": "Premium Ultrabooks",
-  "products": [
-    {
-      "url": "https://example-store.myshopify.com/products/pro-laptop-14",
-      "price": "1499.00",
-      "currency": "USD"
-    }
-  ],
-  "alert_threshold_percent": "10.00"
-}
+{"group_name":"Premium Ultrabooks","products":[{"url":"https://example-store.myshopify.com/products/pro-laptop-14","price":"1499.00","currency":"USD"}],"alert_threshold_percent":"10.00"}
 ```
 
-**Response (201 Created):**
+**Response model**: `TrackProductsResponse`
+
 ```json
-{
-  "group_id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-  "group_name": "Premium Ultrabooks",
-  "products_added": 1,
-  "prices_stored": 1
-}
+{"group_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","group_name":"Premium Ultrabooks","products_added":1,"prices_stored":1}
 ```
 
 ---
 
-## 4. Tracked Product Management (`/api/products` & `/api/competitors`)
+## 4. Scraping and Price History (`/api/scraper`)
 
-### 4.1 List Tracked Products
-- **Method / Route**: `GET /api/products`
-- **Auth Required**: Yes
+### 4.1 Trigger Manual Scrape
 
-**Response (200 OK):**
-```json
-{
-  "products": [
-    {
-      "id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-      "product_name": "Premium Ultrabooks",
-      "is_active": true,
-      "created_at": "2025-01-10T12:00:00Z",
-      "updated_at": "2025-01-10T12:00:00Z",
-      "competitors": [
-        {
-          "id": "9ca85f64-5717-4562-b3fc-2c963f66afc1",
-          "url": "https://example-store.myshopify.com/products/pro-laptop-14",
-          "retailer_name": "example-store.myshopify.com",
-          "alert_threshold_percent": "10.00",
-          "created_at": "2025-01-10T12:00:00Z"
-        }
-      ]
-    }
-  ],
-  "total": 1
-}
-```
-
----
-
-### 4.2 Get Product Details
-- **Method / Route**: `GET /api/products/{id}`
-- **Auth Required**: Yes
-
-**Response (200 OK):**
-```json
-{
-  "id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-  "product_name": "Premium Ultrabooks",
-  "is_active": true,
-  "created_at": "2025-01-10T12:00:00Z",
-  "updated_at": "2025-01-10T12:00:00Z",
-  "competitors": [
-    {
-      "id": "9ca85f64-5717-4562-b3fc-2c963f66afc1",
-      "url": "https://example-store.myshopify.com/products/pro-laptop-14",
-      "retailer_name": "example-store.myshopify.com",
-      "alert_threshold_percent": "10.00",
-      "created_at": "2025-01-10T12:00:00Z"
-    }
-  ]
-}
-```
-
----
-
-### 4.3 Update Product Group
-- **Method / Route**: `PUT /api/products/{id}`
-- **Auth Required**: Yes
-
-**Request Body:**
-```json
-{
-  "product_name": "Enterprise Ultrabooks 2025",
-  "is_active": true
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-  "product_name": "Enterprise Ultrabooks 2025",
-  "is_active": true,
-  "created_at": "2025-01-10T12:00:00Z",
-  "updated_at": "2025-01-10T14:30:00Z",
-  "competitors": []
-}
-```
-
----
-
-### 4.4 Delete Product Group (Cascade)
-- **Method / Route**: `DELETE /api/products/{id}`
-- **Auth Required**: Yes
-
-**Response (200 OK):**
-```json
-{
-  "message": "Product deleted successfully"
-}
-```
-
----
-
-### 4.5 Add Competitor to Product
-- **Method / Route**: `POST /api/products/{id}/competitors`
-- **Auth Required**: Yes
-
-**Request Body:**
-```json
-{
-  "url": "https://competitor.com/products/laptop",
-  "retailer_name": "CompetitorDirect",
-  "alert_threshold_percent": "8.00"
-}
-```
-
-**Response (201 Created):**
-```json
-{
-  "id": "8aa85f64-5717-4562-b3fc-2c963f66afd4",
-  "url": "https://competitor.com/products/laptop",
-  "retailer_name": "CompetitorDirect",
-  "alert_threshold_percent": "8.00",
-  "created_at": "2025-01-10T15:00:00Z"
-}
-```
-
----
-
-### 4.6 Delete Single Competitor
-- **Method / Route**: `DELETE /api/competitors/{id}`
-- **Auth Required**: Yes
-
-**Response (200 OK):**
-```json
-{
-  "message": "Competitor deleted successfully"
-}
-```
-
----
-
-## 5. Distributed Scraping & Price History (`/api/scraper`)
-
-### 5.1 Trigger Manual Background Scrape
-Enqueues a Celery scrape task and returns a `task_id` for non-blocking execution.
 - **Method / Route**: `POST /api/scraper/scrape/manual/{product_id}`
-- **Rate Limit**: 10/minute
 - **Auth Required**: Yes
+- **Success**: `202 Accepted`
+- **Response model**: `ScrapeTaskResponse`
 
-**Response (200 OK):**
 ```json
-{
-  "task_id": "c56d0a7a-8b1e-4c5a-b678-831d683709f1",
-  "status": "queued",
-  "message": "Scrape task queued"
-}
+{"task_id":"c56d0a7a-8b1e-4c5a-b678-831d683709f1","status":"queued","message":"Scraping 3 competitors"}
 ```
 
----
+### 4.2 Stream Scrape Progress
 
-### 5.2 Stream Scrape Progress (Server-Sent Events)
-Provides live real-time progress events for an in-flight manual scrape task.
 - **Method / Route**: `GET /api/scraper/scrape/stream/{task_id}`
-- **Response Type**: `text/event-stream`
-- **Auth Required**: No (Token validated during task generation)
-
-**Stream Chunk Example:**
-```http
-data: {"status": "scraping", "completed": 1, "total": 3, "current": "example-store.myshopify.com", "results": [...]}
-
-data: {"status": "completed", "completed": 3, "total": 3, "current": null, "results": [...]}
-```
-
----
-
-### 5.3 Worker Infrastructure Health Check
-- **Method / Route**: `GET /api/scraper/scrape/worker-health`
 - **Auth Required**: No
+- **Success**: `200 OK`
+- **Response content type**: `text/event-stream`
 
-**Response (200 OK):**
-```json
-{
-  "worker_status": "online",
-  "active_workers": 2,
-  "broker_status": "connected"
-}
+```http
+data: {"status":"scraping","completed":1,"total":3,"current":"example-store.myshopify.com"}
+
+data: {"status":"completed","completed":3,"total":3,"results":[]}
 ```
 
----
+### 4.3 Price History
 
-### 5.4 Get Price History for Product Group
-- **Method / Route**: `GET /api/scraper/prices/{product_id}/history`
+- **Method / Route**: `GET /api/scraper/prices/{product_id}/history?limit=100&offset=0`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `PriceHistoryListResponse`
 
-**Response (200 OK):**
 ```json
-{
-  "prices": [
-    {
-      "id": "1fa85f64-5717-4562-b3fc-2c963f66afe1",
-      "competitor_id": "9ca85f64-5717-4562-b3fc-2c963f66afc1",
-      "price": "1499.00",
-      "currency": "USD",
-      "scraped_at": "2025-01-10T12:00:00Z",
-      "scrape_status": "success",
-      "error_message": null
-    }
-  ],
-  "total": 1
-}
+{"prices":[{"id":"1fa85f64-5717-4562-b3fc-2c963f66afe1","competitor_id":"9ca85f64-5717-4562-b3fc-2c963f66afc1","price":"1499.00","currency":"USD","scraped_at":"2025-01-10T12:00:00Z","scrape_status":"success","error_message":null}],"total":1}
 ```
 
----
+### 4.4 Latest Competitor Price
 
-### 5.5 Get Latest Price for Competitor
 - **Method / Route**: `GET /api/scraper/prices/latest/{competitor_id}`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `PriceHistoryResponse` or `null`
 
-**Response (200 OK):**
 ```json
-{
-  "id": "1fa85f64-5717-4562-b3fc-2c963f66afe1",
-  "competitor_id": "9ca85f64-5717-4562-b3fc-2c963f66afc1",
-  "price": "1499.00",
-  "currency": "USD",
-  "scraped_at": "2025-01-10T12:00:00Z",
-  "scrape_status": "success",
-  "error_message": null
-}
+{"id":"1fa85f64-5717-4562-b3fc-2c963f66afe1","competitor_id":"9ca85f64-5717-4562-b3fc-2c963f66afc1","price":"1499.00","currency":"USD","scraped_at":"2025-01-10T12:00:00Z","scrape_status":"success","error_message":null}
+```
+
+### 4.5 Chart Data Through Scraper Router
+
+- **Method / Route**: `GET /api/scraper/prices/{product_id}/chart-data?days=30`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `ChartDataResponse`
+
+```json
+{"product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","competitors":[],"date_range_start":null,"date_range_end":null,"total_data_points":0}
+```
+
+### 4.6 Worker Health
+
+- **Method / Route**: `GET /api/scraper/scrape/worker-health`
+- **Auth Required**: No
+- **Success**: `200 OK`
+- **Response model**: `WorkerHealthResponse`
+
+```json
+{"worker_status":"online","ping_response":"pong","active_tasks":0,"error":null}
 ```
 
 ---
 
-## 6. Charts & Export Endpoints (`/api/charts` & `/api/export`)
+## 5. Charts and Export
 
-### 6.1 Get Structured Time-Series Chart Data
-Transforms raw price observations into frontend-ready time series with pre-calculated statistics.
+### 5.1 Chart Data
+
 - **Method / Route**: `GET /api/charts/{product_id}?days=30`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `ChartDataResponse`
 
-**Response (200 OK):**
 ```json
-{
-  "product_id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-  "product_name": "Premium Ultrabooks",
-  "competitors": [
-    {
-      "competitor_id": "9ca85f64-5717-4562-b3fc-2c963f66afc1",
-      "competitor_name": "example-store.myshopify.com",
-      "url": "https://example-store.myshopify.com/products/pro-laptop-14",
-      "data_points": [
-        {
-          "timestamp": "2025-01-01T02:00:00Z",
-          "price": "1599.00",
-          "currency": "USD",
-          "status": "success"
-        },
-        {
-          "timestamp": "2025-01-10T02:00:00Z",
-          "price": "1499.00",
-          "currency": "USD",
-          "status": "success"
-        }
-      ],
-      "average_price": "1549.00",
-      "min_price": "1499.00",
-      "max_price": "1599.00",
-      "current_price": "1499.00",
-      "price_change_percent": "-6.25"
-    }
-  ],
-  "date_range_start": "2025-01-01T02:00:00Z",
-  "date_range_end": "2025-01-10T02:00:00Z",
-  "total_data_points": 2
-}
+{"product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","competitors":[{"competitor_id":"9ca85f64-5717-4562-b3fc-2c963f66afc1","competitor_name":"example-store.myshopify.com","url":"https://example-store.myshopify.com/products/pro-laptop-14","data_points":[{"timestamp":"2025-01-10T02:00:00Z","price":"1499.00","currency":"USD","status":"success"}],"average_price":"1499.00","min_price":"1499.00","max_price":"1499.00","current_price":"1499.00","price_change_percent":"0.00"}],"date_range_start":"2025-01-10T02:00:00Z","date_range_end":"2025-01-10T02:00:00Z","total_data_points":1}
 ```
 
----
+### 5.2 Export Price History CSV
 
-### 6.2 Export Price History as CSV
-Streams historical observations formatted for spreadsheet analysis. Supports Dual Bearer Header and Cookie authentication for direct browser downloads.
 - **Method / Route**: `GET /api/export/{product_id}/csv`
-- **Response Content-Type**: `text/csv`
-- **Header**: `Content-Disposition: attachment; filename="Premium_Ultrabooks_price_history_20250110.csv"`
-- **Auth Required**: Yes (`Bearer Token` or `access_token` cookie)
+- **Auth Required**: Yes, via Bearer token or `access_token` cookie
+- **Success**: `200 OK`
+- **Not Found**: `404 Not Found`
+- **Response content type**: `text/csv`
+- **Header**: `Content-Disposition: attachment; filename="<product>_price_history_<YYYYMMDD>.csv"`
 
-**Sample CSV Stream Output:**
 ```csv
-Date,Competitor,Price,Currency,Status,Error
-2025-01-10 02:00:00,example-store.myshopify.com,1499.00,USD,success,
-2025-01-01 02:00:00,example-store.myshopify.com,1599.00,USD,success,
+Date,Time,Competitor,Price,Currency,Status,Error
+2025-01-10,02:00:00,example-store.myshopify.com,1499.00,USD,success,
 ```
 
 ---
 
-## 7. AI Insights Engine (`/api/insights`)
+## 6. AI Insights (`/api/insights`)
 
-### 7.1 Get AI Insights for Product
+### 6.1 Product Insights
+
 - **Method / Route**: `GET /api/insights/{product_id}`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `InsightListResponse`
 
-**Response (200 OK):**
 ```json
-{
-  "insights": [
-    {
-      "id": "2da85f64-5717-4562-b3fc-2c963f66aff3",
-      "product_id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-      "insight_text": "Competitor pricing has decreased by 6.25% over the last 10 days, suggesting post-holiday discounting.",
-      "insight_type": "pattern",
-      "confidence_score": "0.94",
-      "generated_at": "2025-01-10T03:00:00Z"
-    }
-  ],
-  "total": 1
-}
+{"insights":[{"id":"2da85f64-5717-4562-b3fc-2c963f66aff3","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","insight_text":"Competitor pricing has decreased by 6.25% over the last 10 days.","insight_type":"pattern","confidence_score":"0.94","generated_at":"2025-01-10T03:00:00Z"}],"total":1}
 ```
 
----
+### 6.2 Generate Product Insights
 
-### 7.2 Generate Fresh Insights (Groq Llama 3.3 70B)
-Synthesizes price history into structured insights. Rate-limited to once per 24 hours per product.
 - **Method / Route**: `POST /api/insights/generate/{product_id}`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `GenerateInsightRequest`
 
-**Request Body (Optional):**
 ```json
-{
-  "force_regenerate": false
-}
+{"force_regenerate":false}
 ```
 
-**Response (200 OK):**
+**Response model**: `InsightListResponse`
+
 ```json
-{
-  "insights": [
-    {
-      "id": "2da85f64-5717-4562-b3fc-2c963f66aff3",
-      "product_id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-      "insight_text": "Price stabilized around $1499.00 across retailers. Recommend maintaining current margin target.",
-      "insight_type": "recommendation",
-      "confidence_score": "0.89",
-      "generated_at": "2025-01-10T16:00:00Z"
-    }
-  ],
-  "total": 1
-}
+{"insights":[{"id":"2da85f64-5717-4562-b3fc-2c963f66aff3","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","insight_text":"Price stabilized around $1499.00 across retailers.","insight_type":"recommendation","confidence_score":"0.89","generated_at":"2025-01-10T16:00:00Z"}],"total":1}
+```
+
+### 6.3 All Insights Dashboard Feed
+
+- **Method / Route**: `GET /api/insights`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+
+```json
+{"insights":[{"id":"2da85f64-5717-4562-b3fc-2c963f66aff3","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","insight_text":"Price stabilized around $1499.00 across retailers.","insight_type":"recommendation","generated_at":"2025-01-10T16:00:00Z"}],"total":1}
 ```
 
 ---
 
-## 8. Smart Alerts & Notification Configuration (`/api/alerts`)
+## 7. Alerts (`/api/alerts`)
 
-### 8.1 Get Alert Settings
+### 7.1 Get Alert Settings
+
 - **Method / Route**: `GET /api/alerts/settings`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `AlertSettingsResponse`
 
-**Response (200 OK):**
 ```json
-{
-  "user_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "email_enabled": true,
-  "digest_frequency_hours": 24,
-  "alert_price_drop": true,
-  "alert_price_increase": true,
-  "last_digest_sent_at": "2025-01-10T00:00:00Z"
-}
+{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email_enabled":true,"digest_frequency":"daily","alert_on_price_drop":true,"alert_on_price_increase":true,"alert_threshold_percent":"5.00"}
 ```
 
----
+### 7.2 Update Alert Settings
 
-### 8.2 Update Alert Settings
 - **Method / Route**: `PUT /api/alerts/settings`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `AlertSettingsUpdate`
 
-**Request Body:**
 ```json
-{
-  "email_enabled": true,
-  "digest_frequency_hours": 12,
-  "alert_price_drop": true,
-  "alert_price_increase": false
-}
+{"email_enabled":true,"digest_frequency":"daily","alert_on_price_drop":true,"alert_on_price_increase":false,"alert_threshold_percent":"5.00"}
 ```
 
-**Response (200 OK):**
+**Response model**: `AlertSettingsResponse`
+
 ```json
-{
-  "user_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "email_enabled": true,
-  "digest_frequency_hours": 12,
-  "alert_price_drop": true,
-  "alert_price_increase": false,
-  "last_digest_sent_at": "2025-01-10T00:00:00Z"
-}
+{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email_enabled":true,"digest_frequency":"daily","alert_on_price_drop":true,"alert_on_price_increase":false,"alert_threshold_percent":"5.00"}
 ```
 
----
+### 7.3 Pending Alerts
 
-### 8.3 Get Pending Alerts
 - **Method / Route**: `GET /api/alerts/pending`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `PendingAlertsListResponse`
 
-**Response (200 OK):**
 ```json
-{
-  "alerts": [
-    {
-      "id": "5ea85f64-5717-4562-b3fc-2c963f66afe5",
-      "product_id": "4fa85f64-5717-4562-b3fc-2c963f66afb2",
-      "product_name": "Premium Ultrabooks",
-      "competitor_id": "9ca85f64-5717-4562-b3fc-2c963f66afc1",
-      "competitor_url": "https://example-store.myshopify.com/products/pro-laptop-14",
-      "old_price": "1599.00",
-      "new_price": "1499.00",
-      "price_change_percent": "-6.25",
-      "alert_type": "price_drop",
-      "old_currency": "USD",
-      "new_currency": "USD",
-      "created_at": "2025-01-10T02:00:00Z"
-    }
-  ],
-  "total": 1
-}
+{"alerts":[{"id":"5ea85f64-5717-4562-b3fc-2c963f66afe5","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","competitor_id":"9ca85f64-5717-4562-b3fc-2c963f66afc1","competitor_url":"https://example-store.myshopify.com/products/pro-laptop-14","old_price":"1599.00","new_price":"1499.00","price_change_percent":"-6.25","alert_type":"price_drop","old_currency":"USD","new_currency":"USD","created_at":"2025-01-10T02:00:00Z"}],"total":1}
 ```
 
----
+### 7.4 Alert History
 
-### 8.4 Accept Currency Migration (Single / Bulk)
-Resolves currency mismatch alerts and updates expected currency.
+- **Method / Route**: `GET /api/alerts/history?limit=20`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Response model**: `AlertHistoryListResponse`
 
-**Single Competitor Update:**
-- **Method / Route**: `PATCH /api/alerts/competitors/{competitor_id}/accept-currency`
-- **Request Body**: `{"currency": "GBP"}`
-- **Response (200 OK)**: `{"success": true, "message": "Now tracking prices in GBP", "new_currency": "GBP"}`
+```json
+{"alerts":[{"id":"6ea85f64-5717-4562-b3fc-2c963f66afe5","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","alert_type":"price_drop","message":"Premium Ultrabooks dropped 6.25%","sent_at":"2025-01-10T03:00:00Z","email_status":"sent"}],"total":1}
+```
 
-**Bulk Accept All Currency Changes:**
-- **Method / Route**: `POST /api/alerts/accept-all-currencies`
-- **Response (200 OK)**: `{"success": true, "message": "Accepted 2 currency changes", "updated_count": 2}`
+### 7.5 Send Test Email
 
----
-
-### 8.5 Send Diagnostic Test Email
 - **Method / Route**: `POST /api/alerts/test`
 - **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `TestEmailRequest` or `null`
 
-**Request Body (Optional):**
 ```json
-{
-  "email": "user@example.com"
-}
+{"email":"user@example.com"}
 ```
 
-**Response (200 OK):**
+**Response example**:
+
 ```json
-{
-  "success": true,
-  "message": "Test email sent to user@example.com",
-  "email": "user@example.com"
-}
+{"success":true,"message":"Test email sent successfully","email":"user@example.com"}
+```
+
+### 7.6 Accept One Currency Change
+
+- **Method / Route**: `PATCH /api/alerts/competitors/{competitor_id}/accept-currency`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `AcceptCurrencyRequest`
+
+```json
+{"currency":"GBP"}
+```
+
+**Response example**:
+
+```json
+{"success":true,"message":"Now tracking prices in GBP","competitor_id":"9ca85f64-5717-4562-b3fc-2c963f66afc1","new_currency":"GBP"}
+```
+
+### 7.7 Accept All Currency Changes
+
+- **Method / Route**: `POST /api/alerts/accept-all-currencies`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request body**: none
+
+```json
+{"success":true,"message":"Accepted 2 currency changes","updated_count":2}
 ```
 
 ---
 
-## 9. Dashboard Helper Endpoints (`/api/dashboard`)
+## 8. Account (`/api/account`)
 
-High-performance aggregated endpoints designed for dashboard rendering with minimal network roundtrips:
+### 8.1 Change Password
 
-| Endpoint | Method | Description | Sample Output |
-|---|---|---|---|
-| `/api/dashboard/stats` | `GET` | Exact entity counts for dashboard tiles | `{"products": 5, "competitors": 12, "alerts": 3, "insights": 2}` |
-| `/api/dashboard/activity` | `GET` | 10 most recent price alerts & movements | `{"activity": [{"id": "...", "type": "price_drop", "product_name": "...", "change_percent": -5.0}]}` |
-| `/api/dashboard/products` | `GET` | 5 recent products with competitor counts | `{"products": [{"id": "...", "product_name": "...", "competitor_count": 3}]}` |
+- **Method / Route**: `POST /api/account/change-password`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `ChangePasswordRequest`
+
+```json
+{"current_password":"OldPassword123!","new_password":"NewSecurePassword456!"}
+```
+
+**Response example**:
+
+```json
+{"message":"Password updated successfully"}
+```
+
+### 8.2 Change Email
+
+- **Method / Route**: `POST /api/account/change-email`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+- **Request model**: `ChangeEmailRequest`
+
+```json
+{"new_email":"updated-email@example.com"}
+```
+
+**Response example**:
+
+```json
+{"message":"Verification email sent to your new address. Please check your inbox."}
+```
+
+### 8.3 Account Settings
+
+- **Method / Route**: `GET /api/account/settings`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+
+```json
+{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email":"user@example.com"}
+```
+
+### 8.4 Delete Account Data
+
+- **Method / Route**: `DELETE /api/account/delete`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+
+```json
+{"message":"Account data deleted successfully. Please log out."}
+```
 
 ---
 
-## 10. System Health Endpoint
+## 9. Dashboard Helper APIs
+
+These JSON endpoints support the HTML dashboard.
+
+### 9.1 Dashboard Stats
+
+- **Method / Route**: `GET /api/dashboard/stats`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+
+```json
+{"products":5,"competitors":12,"alerts":3,"insights":2}
+```
+
+### 9.2 Dashboard Activity
+
+- **Method / Route**: `GET /api/dashboard/activity`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+
+```json
+{"activity":[{"id":"5ea85f64-5717-4562-b3fc-2c963f66afe5","type":"price_drop","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","retailer":"example-store.myshopify.com","old_price":1599.0,"new_price":1499.0,"change_percent":-6.25,"detected_at":"2025-01-10T02:00:00Z"}]}
+```
+
+### 9.3 Dashboard Products
+
+- **Method / Route**: `GET /api/dashboard/products`
+- **Auth Required**: Yes
+- **Success**: `200 OK`
+
+```json
+{"products":[{"id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","is_active":true,"competitor_count":3}]}
+```
+
+---
+
+## 10. System Health
 
 ### 10.1 Health Check
+
 - **Method / Route**: `GET /api/health`
 - **Auth Required**: No
+- **Success**: `200 OK`
 
-**Response (200 OK):**
 ```json
-{
-  "status": "healthy"
-}
+{"status":"healthy"}
 ```
