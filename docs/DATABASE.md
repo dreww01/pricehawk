@@ -2,7 +2,7 @@
 
 ## Overview
 
-PriceHawk utilizes **Supabase PostgreSQL** as its primary persistence and identity engine. The database architecture is designed around strict **multi-tenant isolation** using native PostgreSQL **Row-Level Security (RLS)**, automated timestamp triggers, and high-performance composite indexes.
+PriceHawk utilizes **Supabase PostgreSQL** as its primary persistence and identity engine. The deployed schema uses native PostgreSQL **Row-Level Security (RLS)** on the product, competitor, price-history, insights, and tracking-job tables, plus application/service-role filtering for alert tables. Operators must treat alert table tenant isolation as application-enforced unless additional RLS policies are added.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -275,7 +275,15 @@ CREATE INDEX IF NOT EXISTS idx_alert_history_sent_at ON alert_history(digest_sen
 
 ## Row-Level Security (RLS) & Tenant Isolation
 
-Every table has RLS enabled (`ALTER TABLE <table> ENABLE ROW LEVEL SECURITY;`). Supabase automatically evaluates policies against the authenticated JWT's `auth.uid()`.
+The deployed `docs/database_schema.sql` enables RLS on exactly these tables:
+
+- `products`
+- `competitors`
+- `price_history`
+- `insights`
+- `tracking_jobs`
+
+RLS is **not** currently enabled for `user_alert_settings`, `pending_alerts`, or `alert_history`, and the schema does not create policies for those alert-related tables. Current API code filters these tables by `user_id` and uses service-role clients for background alert processing, but direct database/API access to those tables is not isolated by PostgreSQL RLS. If direct client access to alert tables is required, add and verify RLS policies before deployment.
 
 ```mermaid
 flowchart LR
@@ -283,19 +291,24 @@ flowchart LR
         Token["Supabase JWT (claims.sub = user_uuid)"]
     end
 
-    subgraph PostgresEngine["PostgreSQL Engine"]
-        RLSCheck{"RLS Policy Check"}
-        Allow["Allow Read / Write"]
-        Deny["Filter / Reject (0 rows / 403)"]
+    subgraph RlsTables["RLS-enabled tables"]
+        Products["products: user_id = auth.uid()"]
+        Children["competitors / price_history / insights: product ownership"]
+        Jobs["tracking_jobs: user_id = auth.uid() for SELECT"]
     end
 
-    Token -->|auth.uid()| RLSCheck
-    RLSCheck -->|user_id = auth.uid()| Allow
-    RLSCheck -->|user_id != auth.uid()| Deny
+    subgraph AlertTables["Alert tables without deployed RLS"]
+        AppFilter["API filters user_id in application queries"]
+    end
+
+    Token --> Products
+    Products --> Children
+    Token --> Jobs
+    Token --> AppFilter
 ```
 
-### 1. Direct Ownership Policies (`products`, `user_alert_settings`, `pending_alerts`, `alert_history`)
-Users can only manipulate records explicitly tagged with their `user_id`:
+### 1. Direct Ownership Policies (`products`)
+Users can manipulate only product rows explicitly tagged with their `user_id`:
 ```sql
 CREATE POLICY "Users can view own products"
     ON products FOR SELECT
@@ -318,7 +331,6 @@ CREATE POLICY "Users can delete own products"
 ### 2. Join-Based Cascading Policies (`competitors`, `price_history`, `insights`)
 Access to child entities is gated by ownership of the ancestor `products` record:
 ```sql
--- Competitors access policy
 CREATE POLICY "Users can view own competitors"
     ON competitors FOR SELECT
     USING (
@@ -327,7 +339,6 @@ CREATE POLICY "Users can view own competitors"
         )
     );
 
--- Price History access policy (Read-Only for clients)
 CREATE POLICY "Users can view own price history"
     ON price_history FOR SELECT
     USING (
@@ -337,10 +348,36 @@ CREATE POLICY "Users can view own price history"
             WHERE p.user_id = auth.uid()
         )
     );
+
+CREATE POLICY "Users can view own insights"
+    ON insights FOR SELECT
+    USING (
+        product_id IN (
+            SELECT id FROM products WHERE user_id = auth.uid()
+        )
+    );
 ```
 
-### 3. Service Role Privileges (Background Tasks)
-Background Celery workers utilize the **Supabase Service Key**, which bypasses RLS at the PostgreSQL connection level. This enables asynchronous workers to write price records, compute AI insights across products, and query pending alerts across all tenants.
+`competitors` also has insert, update, and delete policies using the same product-ownership predicate. `price_history` is read-only for authenticated clients. `insights` allows authenticated users to delete their own product insights and includes a permissive insert policy for backend/service writes.
+
+### 3. Tracking Job Policies (`tracking_jobs`)
+Authenticated users can view only their own tracking jobs, while background workers use the service role to manage all jobs:
+```sql
+CREATE POLICY "Users can view own tracking jobs"
+    ON tracking_jobs FOR SELECT
+    USING (user_id = auth.uid());
+
+CREATE POLICY "Service can manage tracking jobs"
+    ON tracking_jobs FOR ALL
+    USING (true)
+    WITH CHECK (true);
+```
+
+### 4. Alert Table Limitation (`user_alert_settings`, `pending_alerts`, `alert_history`)
+These tables have `user_id` foreign keys and supporting indexes, and the FastAPI routes query them with `user_id = current_user.id`. However, the SQL schema does not execute `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` for them and does not create PostgreSQL policies. This is a known deployed-schema limitation rather than a guaranteed database-level tenant boundary.
+
+### 5. Service Role Privileges (Background Tasks)
+Background Celery workers utilize the **Supabase Service Key**, which bypasses RLS at the PostgreSQL connection level. This enables asynchronous workers to write price records, compute AI insights across products, manage tracking jobs, and query pending alerts across all tenants.
 
 ---
 
@@ -353,14 +390,33 @@ To initialize or migrate the database, execute `docs/database_schema.sql` within
 -- 1. Verify table presence
 SELECT table_name FROM information_schema.tables
 WHERE table_schema = 'public'
-  AND table_name IN ('products', 'competitors', 'price_history', 'insights', 'pending_alerts', 'user_alert_settings', 'alert_history');
+  AND table_name IN (
+    'products', 'competitors', 'price_history', 'insights', 'tracking_jobs',
+    'pending_alerts', 'user_alert_settings', 'alert_history'
+  )
+ORDER BY table_name;
 
--- 2. Confirm RLS is enabled on all tables
+-- 2. Confirm exactly which documented tables have RLS enabled
 SELECT tablename, rowsecurity FROM pg_tables
-WHERE tablename IN ('products', 'competitors', 'price_history', 'insights', 'pending_alerts', 'user_alert_settings', 'alert_history');
+WHERE schemaname = 'public'
+  AND tablename IN (
+    'products', 'competitors', 'price_history', 'insights', 'tracking_jobs',
+    'pending_alerts', 'user_alert_settings', 'alert_history'
+  )
+ORDER BY tablename;
 
--- 3. Verify RLS policies are active
+-- Expected rowsecurity=true: products, competitors, price_history, insights, tracking_jobs.
+-- Expected rowsecurity=false: pending_alerts, user_alert_settings, alert_history.
+
+-- 3. Verify deployed RLS policies only for RLS-enabled tables
 SELECT tablename, policyname, cmd FROM pg_policies
 WHERE schemaname = 'public'
-ORDER BY tablename, cmd;
+  AND tablename IN ('products', 'competitors', 'price_history', 'insights', 'tracking_jobs')
+ORDER BY tablename, cmd, policyname;
+
+-- 4. Confirm alert tables currently have no deployed RLS policies
+SELECT tablename, policyname, cmd FROM pg_policies
+WHERE schemaname = 'public'
+  AND tablename IN ('pending_alerts', 'user_alert_settings', 'alert_history')
+ORDER BY tablename, cmd, policyname;
 ```
