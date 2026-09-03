@@ -25,8 +25,8 @@ This guide provides step-by-step developer onboarding for building, running, and
 git clone https://github.com/dreww01/pricehawk.git
 cd pricehawk
 
-# Synchronize dependencies with uv (creates .venv)
-uv sync
+# Synchronize dependencies with uv, including the test extra (creates .venv)
+uv sync --extra test
 
 # Alternatively, using standard python venv and pip:
 python3 -m venv .venv
@@ -133,17 +133,23 @@ PriceHawk includes automated test suites covering authentication, scraping engin
 
 ### Running Test Suites with Pytest
 
+Install the `test` extra before running pytest or coverage commands. If you did not use `uv sync --extra test` during setup, run:
+
+```bash
+uv sync --extra test
+```
+
 ```bash
 # Run all unit and integration tests
-pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run tests with code coverage report
-pytest tests/ --cov=app --cov-report=term-missing
+uv run pytest tests/ --cov=app --cov-report=term-missing
 
 # Run a specific test module
-pytest tests/test_auth.py -v
-pytest tests/test_pages.py -v
-pytest tests/test_scraper.py -v
+uv run pytest tests/test_auth.py -v
+uv run pytest tests/test_pages.py -v
+uv run pytest tests/test_scraper.py -v
 ```
 
 ---
