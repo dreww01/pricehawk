@@ -22,7 +22,7 @@ from app.tasks.scraper_tasks import scrape_product_manual, get_scrape_progress
 
 
 router = APIRouter(tags=["scraper"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 class WorkerHealthResponse(BaseModel):

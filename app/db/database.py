@@ -1,11 +1,11 @@
 from supabase import create_client, Client
-from fastapi import Depends
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import get_settings
 
 # Shared security instance
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 def get_supabase_client(access_token: str | None = None) -> Client:
@@ -41,7 +41,7 @@ def get_supabase_client_with_session(access_token: str) -> Client:
 
 
 def get_user_supabase_client(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security)
 ) -> Client:
     """
     Dependency to get authenticated Supabase client with user's JWT token.
@@ -49,4 +49,10 @@ def get_user_supabase_client(
     This ensures consistent token handling across all endpoints.
     Use this instead of manually calling get_supabase_client(credentials.credentials).
     """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return get_supabase_client(credentials.credentials)

@@ -12,8 +12,7 @@ from app.services.chart_service import ChartService
 
 
 router = APIRouter(prefix="/charts", tags=["charts"])
-security = HTTPBearer()
-
+security = HTTPBearer(auto_error=False)
 
 @router.get(
     "/{product_id}",

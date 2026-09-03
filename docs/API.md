@@ -34,7 +34,7 @@ Authenticated routes can also return:
 | Status | Meaning | Example |
 |---|---|---|
 | `400 Bad Request` | Business rule or upstream service failure | `{"detail":"Unable to create account. Please try again."}` |
-| `401 Unauthorized` | Missing, invalid, or expired token | `{"detail":"Invalid or expired token"}` |
+| `401 Unauthorized` | Missing, invalid, or expired Bearer token | `{"detail":"Not authenticated"}` or `{"detail":"Invalid or expired token"}` |
 | `403 Forbidden` | Authenticated user cannot access resource | `{"detail":"Not authorized to modify this competitor"}` |
 | `404 Not Found` | Resource not found or hidden by tenant scoping | `{"detail":"Product not found"}` |
 | `429 Too Many Requests` | Rate limit exceeded | `{"error":"Rate limit exceeded: 5 per 1 minute"}` |

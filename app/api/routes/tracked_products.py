@@ -12,8 +12,7 @@ from app.db.models import (
 
 
 router = APIRouter(prefix="/tracked-products", tags=["tracked-products"])
-security = HTTPBearer()
-
+security = HTTPBearer(auto_error=False)
 
 def _build_product_response(product: dict, competitors: list[dict]) -> ProductResponse:
     """Build ProductResponse from database rows."""

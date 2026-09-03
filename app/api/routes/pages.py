@@ -17,8 +17,7 @@ from app.db.database import get_supabase_client
 
 
 router = APIRouter(tags=["pages"])
-security = HTTPBearer()
-
+security = HTTPBearer(auto_error=False)
 # Template configuration
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 templates = Jinja2Templates(directory=BASE_DIR / "app" / "templates")

@@ -16,8 +16,7 @@ from app.services.store_discovery import discover_products
 
 
 router = APIRouter(prefix="/stores", tags=["discovery"])
-security = HTTPBearer()
-
+security = HTTPBearer(auto_error=False)
 
 @router.post(
     "/discover",

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.core.config import get_settings, Settings
 
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 class CurrentUser(BaseModel):
@@ -26,10 +26,17 @@ def get_jwks_client(jwks_url: str) -> PyJWKClient:
 
 
 def verify_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     settings: Settings = Depends(get_settings),
 ) -> CurrentUser:
     """Verify Supabase JWT and extract user info."""
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     token = credentials.credentials
 
     try:

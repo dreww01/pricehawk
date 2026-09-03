@@ -13,8 +13,7 @@ from app.db.database import get_supabase_client, get_supabase_client_with_sessio
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/account", tags=["account"])
-security = HTTPBearer()
-
+security = HTTPBearer(auto_error=False)
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
