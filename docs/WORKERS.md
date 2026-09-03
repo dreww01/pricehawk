@@ -137,19 +137,32 @@ celery_app.conf.update(
 - **Soft Time Limit (270s / 4.5 min)**: Triggers `SoftTimeLimitExceeded` inside the Python task, allowing the worker to cleanly close browser sessions, record partial failure states, and release Redis locks.
 - **Hard Time Limit (300s / 5.0 min)**: Hard SIGKILL enforced by the Celery supervisor to prevent runaway Playwright browser subprocesses from consuming host memory.
 
-### 3. Exponential Backoff & Retry Strategies
-External network requests to erratic competitor endpoints utilize structured retry logic:
+### 3. Exponential Backoff & Retry Strategy
+`scrape_single_competitor` uses Celery's built-in automatic retry mechanism rather than a hand-written `self.retry(...)` block:
 ```python
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
-def scrape_single_competitor(self, competitor_id: str):
-    try:
-        # Scrape operation
-        ...
-    except Exception as exc:
-        # Exponential backoff: 60s -> 120s -> 240s
-        countdown = 60 * (2 ** self.request.retries)
-        raise self.retry(exc=exc, countdown=countdown)
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_backoff_max=240,
+    retry_jitter=False,
+)
+def scrape_single_competitor(self, competitor_id: str) -> dict:
+    ...
 ```
+
+Operational behavior:
+
+| Setting | Value | Effect |
+|---|---:|---|
+| `autoretry_for` | `(Exception,)` | Any unhandled exception from the task body is retried automatically. |
+| `max_retries` | `3` | Celery may run the initial attempt plus up to three retry attempts. |
+| `retry_backoff` | `60` | The first retry is delayed by 60 seconds. |
+| `retry_backoff_max` | `240` | Retry delay is capped at 240 seconds. |
+| `retry_jitter` | `False` | Delays are deterministic rather than randomized. |
+
+With these settings, scraper failures retry on the documented `60s -> 120s -> 240s` schedule before the task is marked failed.
 
 ---
 

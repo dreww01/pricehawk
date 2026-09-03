@@ -190,10 +190,10 @@ def _extract_domain(url: str) -> str:
 @celery_app.task(
     bind=True,
     max_retries=3,
-    default_retry_delay=60,
     autoretry_for=(Exception,),
-    retry_backoff=True,
+    retry_backoff=60,
     retry_backoff_max=240,
+    retry_jitter=False,
 )
 def scrape_single_competitor(self, competitor_id: str) -> dict:
     """
