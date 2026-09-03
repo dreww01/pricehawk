@@ -178,8 +178,25 @@ flowchart TD
 
 ### 2. Distributed Worker Health Endpoint
 - **URL**: `GET /api/scraper/scrape/worker-health`
-- **Expected Status**: `200 OK` (`{"worker_status": "online", "active_workers": 2, "broker_status": "connected"}`)
-- **Usage**: Diagnostic monitoring for Redis and Celery pool responsiveness.
+- **Expected HTTP Status**: `200 OK` for all diagnostic outcomes.
+- **Response fields**:
+  - `worker_status`: one of `healthy`, `offline`, or `error`.
+  - `ping_response`: present for healthy workers; stringified Celery worker names that answered ping.
+  - `active_tasks`: present for healthy workers; total active Celery tasks across responding workers.
+  - `error`: present for offline or error outcomes.
+- **Healthy example**:
+  ```json
+  {"worker_status":"healthy","ping_response":"['celery@worker-1']","active_tasks":0,"error":null}
+  ```
+- **Offline example** (broker reachable, no worker answered ping):
+  ```json
+  {"worker_status":"offline","ping_response":null,"active_tasks":null,"error":"No workers responded to ping"}
+  ```
+- **Error example** (broker/configuration inspection failed):
+  ```json
+  {"worker_status":"error","ping_response":null,"active_tasks":null,"error":"Connection refused"}
+  ```
+- **Usage**: Diagnostic monitoring for Redis and Celery pool responsiveness; alert when `worker_status` is not `healthy`.
 
 ### 3. Structured Logging & Auditing
 - Logs are output to `stdout` in structured format:
