@@ -440,7 +440,7 @@ Date,Time,Competitor,Price,Currency,Status,Error
 - **Response model**: `AlertSettingsResponse`
 
 ```json
-{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email_enabled":true,"digest_frequency":"daily","alert_on_price_drop":true,"alert_on_price_increase":true,"alert_threshold_percent":"5.00"}
+{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email_enabled":true,"digest_frequency_hours":24,"alert_price_drop":true,"alert_price_increase":true,"last_digest_sent_at":null,"created_at":"2025-01-10T02:00:00Z","updated_at":"2025-01-10T02:00:00Z"}
 ```
 
 ### 7.2 Update Alert Settings
@@ -451,13 +451,13 @@ Date,Time,Competitor,Price,Currency,Status,Error
 - **Request model**: `AlertSettingsUpdate`
 
 ```json
-{"email_enabled":true,"digest_frequency":"daily","alert_on_price_drop":true,"alert_on_price_increase":false,"alert_threshold_percent":"5.00"}
+{"email_enabled":true,"digest_frequency_hours":24,"alert_price_drop":true,"alert_price_increase":false}
 ```
 
 **Response model**: `AlertSettingsResponse`
 
 ```json
-{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email_enabled":true,"digest_frequency":"daily","alert_on_price_drop":true,"alert_on_price_increase":false,"alert_threshold_percent":"5.00"}
+{"user_id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","email_enabled":true,"digest_frequency_hours":24,"alert_price_drop":true,"alert_price_increase":false,"last_digest_sent_at":"2025-01-10T00:00:00Z","created_at":"2025-01-10T02:00:00Z","updated_at":"2025-01-10T16:00:00Z"}
 ```
 
 ### 7.3 Pending Alerts

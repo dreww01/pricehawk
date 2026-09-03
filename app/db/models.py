@@ -231,19 +231,20 @@ class AlertSettingsResponse(BaseModel):
     """User's alert settings."""
     user_id: str
     email_enabled: bool = True
-    digest_frequency: str = "daily"  # 'immediate', 'daily', 'weekly'
-    alert_on_price_drop: bool = True
-    alert_on_price_increase: bool = True
-    alert_threshold_percent: Decimal = Decimal("5.00")
+    digest_frequency_hours: int = Field(default=24, ge=1)
+    alert_price_drop: bool = True
+    alert_price_increase: bool = True
+    last_digest_sent_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class AlertSettingsUpdate(BaseModel):
     """Request to update alert settings."""
     email_enabled: bool | None = None
-    digest_frequency: str | None = None
-    alert_on_price_drop: bool | None = None
-    alert_on_price_increase: bool | None = None
-    alert_threshold_percent: Decimal | None = None
+    digest_frequency_hours: int | None = Field(default=None, ge=1)
+    alert_price_drop: bool | None = None
+    alert_price_increase: bool | None = None
 
 
 class PendingAlertResponse(BaseModel):
