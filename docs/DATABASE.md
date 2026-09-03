@@ -192,7 +192,35 @@ AI-generated market trends and pricing recommendations produced by Groq Llama 3.
 | `confidence_score` | `DECIMAL(3,2)` | `NOT NULL`, `CHECK (confidence_score >= 0.00 AND confidence_score <= 1.00)` | Statistical confidence metric |
 | `generated_at` | `TIMESTAMPTZ` | Default `now()` | Generation timestamp |
 
-### 5. `pending_alerts`
+### 5. `tracking_jobs`
+Background progress records for product-tracking imports and worker-managed tracking workflows.
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `UUID` | `PRIMARY KEY`, Default `gen_random_uuid()` | Unique tracking job ID |
+| `user_id` | `UUID` | `NOT NULL`, `REFERENCES auth.users(id) ON DELETE CASCADE` | User that owns the job |
+| `product_group_id` | `UUID` | Nullable, `REFERENCES products(id) ON DELETE CASCADE` | Product group created or processed by the job |
+| `total_items` | `INTEGER` | `NOT NULL` | Total items expected for the job |
+| `completed_items` | `INTEGER` | Default `0` | Count of successfully completed items |
+| `failed_items` | `INTEGER` | Default `0` | Count of failed items |
+| `status` | `VARCHAR(20)` | Default `'pending'`, `CHECK (status IN ('pending', 'processing', 'completed', 'failed'))` | Job lifecycle state |
+| `created_at` | `TIMESTAMPTZ` | Default `now()` | Job creation timestamp |
+| `updated_at` | `TIMESTAMPTZ` | Default `now()` | Last job update timestamp |
+
+**Lifecycle status values:**
+
+| Status | Meaning |
+|---|---|
+| `pending` | Job record exists but worker processing has not started |
+| `processing` | Worker is actively processing the job |
+| `completed` | All required items finished successfully or with handled per-item outcomes |
+| `failed` | Job-level processing failed |
+
+**Indexes:** `idx_tracking_jobs_user_id`, `idx_tracking_jobs_status`, and `idx_tracking_jobs_product_group_id` support tenant/job lookup, worker status filtering, and product-group joins.
+
+**RLS behavior:** RLS is enabled. Authenticated users can `SELECT` rows where `user_id = auth.uid()`. The `Service can manage tracking jobs` policy permits service-role/background-worker insert, update, delete, and select operations across jobs.
+
+### 6. `pending_alerts`
 Staging queue for detected price movements awaiting digest compilation.
 
 | Column | Type | Constraints | Description |
@@ -211,7 +239,7 @@ Staging queue for detected price movements awaiting digest compilation.
 | `included_in_digest` | `BOOLEAN` | Default `false` | True once dispatched in an email digest |
 | `detected_at` | `TIMESTAMPTZ` | Default `now()` | Detection timestamp |
 
-### 6. `user_alert_settings`
+### 7. `user_alert_settings`
 User-level notification delivery preferences and schedule.
 
 | Column | Type | Constraints | Description |
@@ -226,7 +254,7 @@ User-level notification delivery preferences and schedule.
 | `created_at` | `TIMESTAMPTZ` | Default `now()` | Creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | Default `now()` | Modification timestamp |
 
-### 7. `alert_history`
+### 8. `alert_history`
 Immutable audit log of all transmitted email digests.
 
 | Column | Type | Constraints | Description |
@@ -260,6 +288,11 @@ CREATE INDEX IF NOT EXISTS idx_price_history_status ON price_history(scrape_stat
 -- AI insights lookup by product
 CREATE INDEX IF NOT EXISTS idx_insights_product_id ON insights(product_id);
 CREATE INDEX IF NOT EXISTS idx_insights_generated_at ON insights(generated_at DESC);
+
+-- Tracking job lookup and worker filtering
+CREATE INDEX IF NOT EXISTS idx_tracking_jobs_user_id ON tracking_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_tracking_jobs_status ON tracking_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_tracking_jobs_product_group_id ON tracking_jobs(product_group_id);
 
 -- Alert queue processing (Celery Beat digest batch job)
 CREATE INDEX IF NOT EXISTS idx_pending_alerts_user_id ON pending_alerts(user_id);
