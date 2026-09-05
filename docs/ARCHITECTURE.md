@@ -297,23 +297,28 @@ flowchart TD
     end
 
     subgraph DataSec["Database Isolation Layer"]
-        UserToken["User Auth Token Context (auth.uid())"]
+        UserToken["User Auth Token Context (auth.uid() / RLS Enforced)"]
         RLS["PostgreSQL Row-Level Security (Tenant Isolation)"]
-        ServiceKey["Restricted Service Key (Background Workers Only)"]
+        ServiceKey["Service Role Client (RLS Bypass: Background Tasks & Select Routes)"]
     end
 
     TLS --> SecHeaders --> CORS --> RateLimit --> JWKS --> InputVal
     InputVal --> UserToken --> RLS
-    ServiceKey --> RLS
+    InputVal -.-> ServiceKey
 ```
 
 ### 1. Asymmetric JWT Verification (`app/core/security.py`)
 - Authentication verifies Supabase JWTs signed with **ES256 (ECDSA)**.
 - Public signing keys are dynamically fetched and cached via Supabase's JWKS endpoint (`{sb_url}/auth/v1/.well-known/jwks.json`) using `PyJWKClient` and `@lru_cache`.
 
-### 2. Dual-Layer Tenant Isolation (Application + Database)
-- **Application Level**: All API queries explicitly filter on `user_id = current_user.id`.
-- **Database Level (RLS)**: PostgreSQL Row-Level Security policies ensure that even if an application filter is omitted, the database restricts queries to records where `auth.uid() = user_id` (or joined via product ownership for competitors and price histories).
+### 2. Tenant Isolation Model & Service Role Boundaries
+- **User-Scoped Operations (RLS Enforced)**: For standard user-facing API routes, database queries execute in the user's JWT context (`auth.uid()`) and explicitly filter on `user_id = current_user.id`. PostgreSQL Row-Level Security (RLS) policies enforce tenant isolation on tables where RLS is active (`products`, `competitors`, `price_history` SELECT, and `insights`). Tables without active RLS (`user_alert_settings`, `pending_alerts`, and `alert_history`) rely strictly on application-level `user_id` filtering.
+- **Service Role Key Operations (RLS Bypass)**: The Supabase service-role client bypasses RLS and is used in the following operational paths:
+  - **Background Tasks & Workers**: Celery scraping workers (`app/tasks/scraper_tasks.py`), price history persistence, AI insight generation (`app/services/ai_service.py`), and periodic alert digest evaluation and email delivery (`app/services/alert_service.py`).
+  - **Authentication Flows**: Public auth routes (login, signup, password reset) via `app/api/routes/auth.py`.
+  - **Scraper Price History Retrieval**: Request paths (`/api/scraper/prices/{product_id}/history` and `/api/scraper/prices/latest/{competitor_id}`) in `app/api/routes/scraper.py` query `price_history` via the service client after verifying product/competitor ownership in the application layer.
+  - **Discovery Batch Tracking**: Inserting newly discovered price records into `price_history` during batch track operations (`/api/discovery/track-products`) in `app/api/routes/discovery.py`.
+  - **Currency Acceptance Handlers**: Updating competitor tracking currencies and dismissing pending alerts (`/api/alerts/competitors/{competitor_id}/accept-currency` and `/api/alerts/accept-all-currencies`) in `app/api/routes/alerts.py` after verifying user ownership.
 
 ### 3. Dual Authentication for Export Endpoints (`app/api/routes/export.py`)
 - Supports **Bearer Header** tokens for programmatic API consumers (`Authorization: Bearer <token>`).
