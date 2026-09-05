@@ -286,7 +286,7 @@ flowchart LR
 flowchart TD
     subgraph Edge["Perimeter / Transport Layer"]
         TLS["HTTPS / TLS Termination"]
-        SecHeaders["Security Headers (CSP, HSTS, X-Frame-Options: DENY, nosniff)"]
+        SecHeaders["Security Headers (HSTS, X-Frame-Options: DENY, nosniff, X-XSS-Protection, Referrer-Policy)"]
         CORS["CORS Policy Enforcement"]
     end
 
