@@ -108,7 +108,7 @@ erDiagram
         uuid id PK "gen_random_uuid()"
         uuid user_id FK "auth.users(id) UNIQUE ON DELETE CASCADE"
         boolean email_enabled "Master notification toggle"
-        integer digest_frequency_hours "6, 12, or 24 hours"
+        integer digest_frequency_hours "Batch window frequency (hours >= 1, default 24)"
         boolean alert_price_drop "Notify on price drop"
         boolean alert_price_increase "Notify on price increase"
         timestamptz last_digest_sent_at "Last dispatch timestamp"
@@ -247,7 +247,7 @@ User-level notification delivery preferences and schedule.
 | `id` | `UUID` | `PRIMARY KEY`, Default `gen_random_uuid()` | Settings identifier |
 | `user_id` | `UUID` | `NOT NULL`, `UNIQUE`, `REFERENCES auth.users(id) ON DELETE CASCADE` | Target user (1:1 relationship) |
 | `email_enabled` | `BOOLEAN` | Default `true` | Master email notification toggle |
-| `digest_frequency_hours` | `INTEGER` | Default `24`, Options: `6, 12, 24` | Batch window frequency in hours |
+| `digest_frequency_hours` | `INTEGER` | Default `24`, Minimum `1` (e.g. 6, 12, 24, 168) | Batch window frequency in hours |
 | `alert_price_drop` | `BOOLEAN` | Default `true` | Enable price drop notifications |
 | `alert_price_increase` | `BOOLEAN` | Default `true` | Enable price increase notifications |
 | `last_digest_sent_at` | `TIMESTAMPTZ` | Nullable | Timestamp of previous email dispatch |

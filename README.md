@@ -17,7 +17,7 @@
 - **Zero-Latency Price Reuse**: Caches and persists prices discovered during catalog exploration directly into the database, eliminating redundant network scrapes.
 - **Distributed Asynchronous Scraping**: Offloads long-running price scrapes to Celery worker pools backed by Redis with real-time Server-Sent Events (SSE) progress streaming.
 - **Groq AI Market Intelligence**: Generates concise, high-confidence price trend insights and actionable pricing recommendations using Llama 3.3 70B running on Groq LPUs.
-- **Configurable Smart Alerts**: Flexible digest-based email notifications (6, 12, or 24-hour windows) with built-in currency guard protection.
+- **Configurable Smart Alerts**: Flexible digest-based email notifications (configurable frequency windows, e.g., 6h, 12h, 24h daily, or 168h weekly) with built-in currency guard protection.
 - **Multi-Tenant Security & Isolation**: End-to-end tenant isolation enforced at the PostgreSQL level via Supabase Row-Level Security (RLS) and ES256 asymmetric JWKS JWT authentication.
 
 ---

@@ -107,7 +107,7 @@ flowchart TD
 
 ### 3. Digest Dispatch Task (`send_alert_digests`)
 1. Queries `user_alert_settings` where `email_enabled = true`.
-2. Computes if `(now - last_digest_sent_at) >= digest_frequency_hours` (supports 6, 12, and 24-hour windows).
+2. Computes if `(now - last_digest_sent_at) >= digest_frequency_hours` (supports configurable hours such as 6, 12, 24, or 168-hour windows).
 3. Fetches un-dispatched records from `pending_alerts` (`included_in_digest = false`), capping at 50 alerts per email.
 4. Renders responsive HTML/plain-text templates and transmits via `EmailService`.
 5. On success: Marks alerts as `included_in_digest = true`, records an entry in `alert_history`, and updates `last_digest_sent_at`.

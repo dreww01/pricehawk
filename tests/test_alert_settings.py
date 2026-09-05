@@ -169,6 +169,30 @@ def test_put_alert_settings_accepts_and_returns_live_contract(alert_api):
     }
 
 
+def test_put_alert_settings_weekly_frequency(alert_api):
+    client, settings_table, _history_table = alert_api
+
+    response = client.put(
+        "/api/alerts/settings",
+        json={"digest_frequency_hours": 168},
+    )
+
+    assert response.status_code == 200
+    assert settings_table.update_data == {"digest_frequency_hours": 168}
+    assert response.json()["digest_frequency_hours"] == 168
+
+
+def test_put_alert_settings_invalid_frequency_rejected(alert_api):
+    client, _settings_table, _history_table = alert_api
+
+    response = client.put(
+        "/api/alerts/settings",
+        json={"digest_frequency_hours": 0},
+    )
+
+    assert response.status_code == 422
+
+
 def test_get_alert_history_serializes_live_contract(alert_api):
     client, _settings_table, _history_table = alert_api
 
