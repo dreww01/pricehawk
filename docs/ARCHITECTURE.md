@@ -2,7 +2,7 @@
 
 ## Overview
 
-**PriceHawk** is an enterprise-grade multi-platform competitor price intelligence and monitoring system. It provides automated store discovery, scheduled price tracking across diverse e-commerce platforms, AI-driven price trend synthesis via Large Language Models (LLMs), and automated multi-frequency email digest alerts.
+**PriceHawk** is an enterprise-grade multi-platform competitor price intelligence and monitoring system. It provides automated store discovery, scheduled price tracking across diverse e-commerce platforms, user-triggered AI price trend synthesis via Large Language Models (LLMs), and automated multi-frequency email digest alerts.
 
 The system is built with an **async-first, decoupled architecture** designed to scale horizontally across web ingresses, distributed background task queues, and persistent storage layers.
 
@@ -20,8 +20,8 @@ The system is built with an **async-first, decoupled architecture** designed to 
 │                                  │                 [ Multi-Platform Scrapers ]          │
 │                                  │                 (Shopify / Woo / Playwright)         │
 │                                  │                            │                         │
-│                         [ Groq AI Llama 3.3 ] ◄───────────────┤                         │
-│                          (Pattern Synthesis)                  ▼                         │
+│                         [ Groq AI Llama 3.3 ] ◄───────────────┐                         │
+│                          (User-Triggered Insights)            ▼                         │
 │                                                    [ Alert & Email Dispatch ]           │
 │                                                         (Resend / SMTP)                 │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
@@ -73,6 +73,7 @@ flowchart TD
     FastAPI -->|Direct DB Read / RLS| SupabaseDB
     FastAPI -->|Enqueue Task| Redis
     FastAPI -->|Progress SSE Stream| Redis
+    FastAPI -->|Authenticated POST /api/insights/generate| GroqService
 
     CeleryBeat -->|Schedule Cron Jobs| Redis
     Redis -->|Dequeue Tasks| CeleryWorker
@@ -93,7 +94,6 @@ flowchart TD
 
     CeleryWorker --> AlertEngine
     AlertEngine -->|Insert Pending Alerts| SupabaseDB
-    CeleryWorker --> GroqService
     GroqService -->|Store Insights| SupabaseDB
     CeleryWorker --> EmailService
 ```
@@ -248,7 +248,7 @@ For sites rendering content via client-side Single Page Application (SPA) framew
 
 ## AI Analysis Pipeline (`app/services/ai_service.py`)
 
-PriceHawk integrates with the **Groq LPU (Language Processing Unit)** infrastructure running **Llama 3.3 70B Versatile** to synthesize competitor price fluctuations into actionable commercial intelligence.
+PriceHawk integrates with the **Groq LPU (Language Processing Unit)** infrastructure running **Llama 3.3 70B Versatile** to synthesize competitor price fluctuations into actionable commercial intelligence only when an authenticated user calls `POST /api/insights/generate/{product_id}`. Celery scrape workers and Beat schedules do not invoke AI generation; they handle scraping, persistence, alert creation, and email dispatch.
 
 ```mermaid
 flowchart LR
