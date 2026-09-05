@@ -65,7 +65,7 @@ This is the live API route list generated from the application router configurat
 | `PUT` | `/api/tracked-products/{product_id}` | Yes | `200` |
 | `DELETE` | `/api/tracked-products/{product_id}` | Yes | `204` |
 | `POST` | `/api/scraper/scrape/manual/{product_id}` | Yes | `202` |
-| `GET` | `/api/scraper/scrape/stream/{task_id}` | No | `200` |
+| `GET` | `/api/scraper/scrape/stream/{task_id}` | No (task ID bearer) | `200` |
 | `GET` | `/api/scraper/prices/{product_id}/history` | Yes | `200` |
 | `GET` | `/api/scraper/prices/latest/{competitor_id}` | Yes | `200` |
 | `GET` | `/api/scraper/prices/{product_id}/chart-data` | Yes | `200` |
@@ -303,9 +303,10 @@ Tracked products are product groups with zero or more competitor URLs attached. 
 ### 4.2 Stream Scrape Progress
 
 - **Method / Route**: `GET /api/scraper/scrape/stream/{task_id}`
-- **Auth Required**: No
+- **Auth Required**: No Bearer-token dependency in the current implementation; possession of the opaque Celery `task_id` authorizes access to that task's stream.
 - **Success**: `200 OK`
 - **Response content type**: `text/event-stream`
+- **Security note**: Treat scrape task IDs as sensitive, unguessable bearer values. The stream can expose progress payloads and completed scrape results, including competitor domains or URLs and prices. Do not log, share, or embed task IDs outside the authenticated manual scrape session that created them.
 
 ```http
 data: {"status":"scraping","completed":1,"total":3,"current":"example-store.myshopify.com"}
