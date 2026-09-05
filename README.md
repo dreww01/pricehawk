@@ -2,362 +2,228 @@
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.128+-green.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Celery](https://img.shields.io/badge/Celery-5.6+-orange.svg)](https://docs.celeryq.dev/)
+[![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E.svg)](https://supabase.com/)
 
-Multi-platform price monitoring system that discovers products from competitor stores, tracks prices over time, and provides AI-powered insights with automated alerts.
+**PriceHawk** is an enterprise-grade, multi-platform competitor price intelligence and monitoring system. It autonomously discovers product catalogs from e-commerce stores, tracks price fluctuations over time, synthesizes trends with Groq Llama 3.3 70B AI, and dispatches smart alert digests.
 
+---
+
+## Architecture Overview
+
+```mermaid
+flowchart LR
+    Client([Client / Web Browser]) --> Ingress[FastAPI Ingress Gateway<br/>JWT Auth / SlowAPI / Security Headers]
+    
+    Ingress -->|Store Discovery| ScraperEngines[Scraper Engines<br/>Shopify JSON / Woo REST / Playwright]
+    Ingress -->|Task Queue| RedisBroker[(Redis Broker & State)]
+    
+    RedisBroker --> CeleryWorkers[Celery Worker Pool<br/>Autonomous & Manual Scrapers]
+    CeleryWorkers --> ScraperEngines
+    
+    ScraperEngines -->|Price Observations| SupabaseDB[(Supabase PostgreSQL<br/>Row-Level Security RLS)]
+    
+    CeleryWorkers -->|Historical Analysis| GroqAI[Groq Llama 3.3 70B<br/>AI Pricing Insights]
+    GroqAI --> SupabaseDB
+    
+    CeleryBeat[Celery Beat Scheduler] -->|Hourly Trigger| CeleryWorkers
+    CeleryWorkers -->|Batch Price Digests| EmailDispatcher[Email Dispatcher<br/>Resend SMTP Service]
+    EmailDispatcher --> UserInbox([User Email Inbox])
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        PriceHawk                            │
-├─────────────────────────────────────────────────────────────┤
-│  Discover  →  Track  →  Analyze  →  Alert                   │
-│                                                             │
-│  Shopify     │  Daily     │  AI        │  Email             │
-│  WooCommerce │  Scraping  │  Insights  │  Digests           │
-│  Custom      │  via       │  via       │  (6/12/24h)        │
-│              │  Celery    │  Groq      │                    │
-└─────────────────────────────────────────────────────────────┘
-```
 
-## Features
+---
 
-| Feature | Description |
-|---------|-------------|
-| **Multi-Platform Discovery** | Auto-detect and scrape Shopify, WooCommerce, and custom stores |
-| **Automated Tracking** | Daily background price collection via Celery + Redis |
-| **AI Insights** | Pattern detection and pricing recommendations (Groq Llama 3.3 70B) |
-| **Smart Alerts** | Digest-based email notifications (configurable 6/12/24h frequency) |
-| **CSV Export** | Download price history for external analysis |
-| **Rate Limiting** | Protection against abuse with slowapi |
-| **Security** | Row-Level Security (RLS), JWT auth, security headers, input validation |
+## Documentation Index
 
-## Tech Stack
+The repository contains an enterprise documentation suite in [`docs/`](docs/):
 
-| Layer | Technology |
-|-------|------------|
-| API Framework | FastAPI (async) |
-| Database | Supabase (PostgreSQL + Auth) |
-| Task Queue | Celery + Redis |
-| Scraping | httpx, BeautifulSoup, Playwright |
-| AI | Groq API |
-| Rate Limiting | slowapi |
-| Validation | Pydantic |
-| Frontend | Jinja2, HTMX, Tailwind CSS |
+| Guide | File Path | Focus & Deliverables |
+|---|---|---|
+| **Architecture Guide** | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Component sequence diagrams, multi-platform scraping engines, AI synthesis pipeline, and defense-in-depth security model. |
+| **Database & Schema Guide** | [`docs/DATABASE.md`](docs/DATABASE.md) | Full Mermaid Entity-Relationship Diagram (`erDiagram`), column data dictionaries, foreign key cascades, and Row-Level Security (RLS) policies. |
+| **REST API Reference** | [`docs/API.md`](docs/API.md) | Complete reference for all endpoints (Auth, Products, Scraping, AI Insights, Alerts, CSV Export) with JSON schemas and error codes. |
+| **Workers & Queue Management** | [`docs/WORKERS.md`](docs/WORKERS.md) | Celery worker topology, Redis broker state, Beat periodic schedules (02:00 UTC scrape, hourly digests), and retry strategies. |
+| **Deployment & Operations Runbook** | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Docker multi-stage build, `docker-compose.yml`, Railway production topology, Supabase migration, and environment secret checklist. |
+| **Local Development Guide** | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Developer onboarding, `uv` virtual environment setup, Playwright browser installation, hermetic test execution, and code style. |
+| **Database SQL Initialization** | [`docs/database_schema.sql`](docs/database_schema.sql) | Idempotent PostgreSQL DDL script for initializing all database tables, indexes, triggers, and RLS policies in Supabase. |
+| **Product Requirements Document** | [`docs/prd.md`](docs/prd.md) | High-level system requirements, user personas, roadmap milestones, and technical delivery goals. |
 
-## Quick Start
+---
+
+## Core Capabilities & Features
+
+- **Multi-Platform Store Discovery**: Auto-detects and extracts products from Shopify (Classic `/products.json` & Modern Hydrogen GraphQL Storefront API), WooCommerce (Store & REST APIs), and bespoke sites (Schema.org JSON-LD & headless Playwright Chromium fallback).
+- **Automated Price Tracking**: Celery Beat schedules daily catalog scraping at 02:00 UTC with automatic delta calculations.
+- **AI-Powered Market Insights**: Groq-hosted Llama 3.3 70B analyzes 30-day time-series data to detect pricing patterns, undercutting alerts, and margin recommendations.
+- **Smart Digest-Based Alerting**: Configurable notification frequencies (6, 12, or 24 hours) via Resend SMTP to eliminate notification fatigue.
+- **Real-Time Progress Streaming**: Asynchronous manual scrapes stream real-time progress via Server-Sent Events (SSE) backed by Redis state.
+- **Defense-in-Depth Security**: Multi-tenant isolation enforced via PostgreSQL Row-Level Security (RLS), ES256 JWKS JWT authentication, SlowAPI rate limiting, and OWASP security headers.
+- **CSV Data Export**: Download complete price history formatted for spreadsheet analysis.
+
+---
+
+## Technology Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| **API Framework** | FastAPI (Python 3.13+) | Asynchronous HTTP endpoints, OpenAPI 3.0 specs |
+| **Database & Identity** | Supabase (PostgreSQL 15+) | Managed database, JWT Auth with ES256 JWKS, Row-Level Security |
+| **Task Queue & Broker** | Celery + Redis | Asynchronous background processing, periodic scheduling |
+| **Web Scraping** | `httpx`, `BeautifulSoup4`, `Playwright` | Multi-engine extraction with headless Chromium |
+| **AI Intelligence** | Groq API (Llama 3.3 70B) | Statistical pattern detection and pricing recommendations |
+| **Rate Limiting** | SlowAPI (Redis backend) | Key-bucket rate limiting across auth and scraping routes |
+| **Frontend UI** | Jinja2, HTMX, Tailwind CSS | Server-rendered interactive dashboard and settings |
+
+---
+
+## Quickstart Guide
 
 ### Prerequisites
 
-- Python 3.13+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Docker (for Redis)
-- Supabase account
-- Groq API key (optional, for AI insights)
+- **Python 3.13+**
+- **[uv](https://docs.astral.sh/uv/)** package manager (or `pip`)
+- **Docker Desktop** (for Redis broker and multi-container execution)
+- **Supabase Account** (free tier at [supabase.com](https://supabase.com))
+- **Groq API Key** (optional, for AI insights at [console.groq.com](https://console.groq.com))
 
-### 1. Clone & Install
+---
 
-```bash
-git clone https://github.com/dreww01/pricehawk.git
-cd pricehawk
-uv sync
-```
+### Method A: Local Development with `docker-compose`
 
-### 2. Configure Environment
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/dreww01/pricehawk.git
+   cd pricehawk
+   ```
 
-```bash
-cp .env.example .env
-```
+2. **Configure environment**:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your Supabase credentials
+   ```
 
-Edit `.env` with your credentials:
+3. **Start the complete stack**:
+   ```bash
+   docker compose up -d
+   docker compose logs -f
+   ```
+   - Web Application: http://localhost:8000
+   - Swagger Documentation: http://localhost:8000/api/docs
 
-```env
-# Required - Supabase
-SB_URL=https://your-project.supabase.co
-SB_ANON_KEY=your-anon-key
-SB_SERVICE_KEY=your-service-key
+---
 
-# Required - Redis
-REDIS_URL=redis://localhost:6379/0
+### Method B: Native Local Development
 
-# Optional - AI Insights
-GROQ_API_KEY=your-groq-api-key
+1. **Install dependencies**:
+   ```bash
+   uv sync
+   source .venv/bin/activate
+   ```
 
-# Optional - Email Alerts
-SMTP_HOST=smtp.resend.com
-SMTP_PORT=587
-SMTP_USERNAME=resend
-SMTP_PASSWORD=your-resend-api-key
-FROM_EMAIL=alerts@yourdomain.com
-```
+2. **Install Playwright Chromium**:
+   ```bash
+   playwright install chromium
+   ```
 
-### 3. Setup Database
+3. **Initialize Supabase Database**:
+   - Open the **SQL Editor** in Supabase.
+   - Paste and execute [`docs/database_schema.sql`](docs/database_schema.sql).
 
-1. Create a new [Supabase](https://supabase.com) project
-2. Go to SQL Editor
-3. Copy contents of `docs/database_schema.sql` and run it
-4. Verify tables created: `products`, `competitors`, `price_history`, `insights`
+4. **Start services across separate terminals**:
 
-### 4. Install Playwright (for JS-rendered sites)
+   ```bash
+   # Terminal 1: Redis Broker
+   docker run --rm -d -p 6379:6379 --name pricehawk-redis redis:7-alpine
 
-```bash
-playwright install chromium
-```
+   # Terminal 2: FastAPI Web Server
+   python run.py
 
-### 5. Start Services
+   # Terminal 3: Celery Worker
+   celery -A app.tasks.celery_app worker --loglevel=info --pool=solo
 
-**Terminal 1 - Redis:**
-```bash
-docker run -d -p 6379:6379 --name redis redis:7-alpine
-```
+   # Terminal 4: Celery Beat (Periodic Scheduler)
+   celery -A app.tasks.celery_app beat --loglevel=info
+   ```
 
-**Terminal 2 - API Server:**
-```bash
-uv run python run.py
-```
+5. **Verify API Health**:
+   ```bash
+   curl http://localhost:8000/api/health
+   # {"status":"healthy"}
+   ```
 
-**Terminal 3 - Celery Worker (required for manual scrapes):**
-```bash
-uv run celery -A app.tasks.celery_app worker --loglevel=info --pool=solo
-```
+---
 
-**Terminal 4 - Celery Beat (scheduler for daily scrapes):**
-```bash
-uv run celery -A app.tasks.celery_app beat --loglevel=info
-```
+## Running Automated Tests
 
-> **Note:** Redis + Celery Worker are required for the "Get Current Prices" button to work. The manual scrape runs as a background task with real-time progress via Server-Sent Events (SSE).
-
-### 6. Verify Setup
+PriceHawk includes automated hermetic test suites covering auth, route authorization, health endpoints, page rendering, and scraper progress:
 
 ```bash
-curl http://localhost:8000/api/health
-# {"status":"healthy"}
+# Run all tests
+pytest tests/ -v
 ```
 
-API Documentation: http://localhost:8000/api/docs
+---
 
-## Docker Deployment
-
-```bash
-docker compose up -d
-docker compose logs -f
-```
-
-## API Reference
-
-### Authentication
-
-All endpoints (except `/api/health`) require JWT token:
-
-```bash
-curl -H "Authorization: Bearer YOUR_JWT_TOKEN" http://localhost:8000/api/products
-```
-
-### Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/health` | Health check |
-| **Auth** |
-| `POST` | `/api/auth/login` | Login with email/password |
-| `POST` | `/api/auth/signup` | Create new account |
-| `POST` | `/api/auth/forgot-password` | Send password reset email |
-| `POST` | `/api/auth/reset-password` | Reset password with token |
-| `GET` | `/api/auth/me` | Get current user info |
-| **Account** |
-| `GET` | `/api/account/settings` | Get account settings |
-| `POST` | `/api/account/change-password` | Change password |
-| `POST` | `/api/account/change-email` | Request email change |
-| `DELETE` | `/api/account/delete` | Delete account |
-| **Discovery** |
-| `POST` | `/api/stores/discover` | Discover products from store URL |
-| `POST` | `/api/stores/track` | Add discovered products to tracking |
-| **Products** |
-| `GET` | `/api/products` | List tracked products |
-| `GET` | `/api/products/{id}` | Get product details with price history |
-| `PUT` | `/api/products/{id}` | Update product |
-| `DELETE` | `/api/products/{id}` | Delete product (soft delete) |
-| **Scraping** |
-| `POST` | `/api/scraper/scrape/manual/{product_id}` | Queue manual scrape (returns task_id) |
-| `GET` | `/api/scraper/scrape/stream/{task_id}` | SSE stream for scrape progress |
-| `GET` | `/api/scraper/scrape/worker-health` | Check Celery worker status |
-| **Insights** |
-| `GET` | `/api/insights/{product_id}` | Get AI insights for product |
-| `POST` | `/api/insights/generate/{product_id}` | Generate new insights |
-| **Alerts** |
-| `GET` | `/api/alerts/settings` | Get notification settings |
-| `PUT` | `/api/alerts/settings` | Update notification settings |
-| `GET` | `/api/alerts/history` | Get sent alert history |
-| `POST` | `/api/alerts/test` | Send test email |
-| **Export** |
-| `GET` | `/api/export/{product_id}/csv` | Export price history as CSV |
-
-### Example: Discover & Track Products
-
-```bash
-# 1. Discover products from a Shopify store
-curl -X POST http://localhost:8000/api/stores/discover \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example-store.myshopify.com", "keyword": "laptop", "limit": 20}'
-
-# 2. Track selected products
-curl -X POST http://localhost:8000/api/stores/track \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "group_name": "Competitor Laptops",
-    "product_urls": ["https://example-store.myshopify.com/products/laptop-pro"],
-    "alert_threshold_percent": 10
-  }'
-
-# 3. Trigger manual scrape (returns task_id, scraping happens in background)
-curl -X POST http://localhost:8000/api/scraper/scrape/manual/{product_id} \
-  -H "Authorization: Bearer $TOKEN"
-# Response: {"task_id": "abc123", "status": "queued", "message": "Scraping 5 competitors"}
-
-# 4. Stream progress via SSE (optional - frontend uses EventSource)
-curl -N http://localhost:8000/api/scraper/scrape/stream/{task_id}
-# Streams: data: {"status": "scraping", "completed": 2, "total": 5, "current": "amazon.com"}
-
-# 5. Get AI insights
-curl http://localhost:8000/api/insights/{product_id} \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-## Project Structure
+## Repository Structure
 
 ```
 pricehawk/
 ├── app/
-│   ├── api/routes/          # API endpoints
-│   │   ├── auth.py          # Login, signup, password reset
-│   │   ├── account.py       # Account management
-│   │   ├── discovery.py     # Store discovery & tracking
-│   │   ├── tracked_products.py  # Product CRUD
-│   │   ├── scraper.py       # Manual scrape triggers
-│   │   ├── insights.py      # AI insights
-│   │   ├── alerts.py        # Alert settings & history
-│   │   ├── export.py        # CSV export
-│   │   └── pages.py         # HTML page routes
+│   ├── api/routes/          # FastAPI route controllers
+│   │   ├── auth.py          # Signup, login, password reset OTP
+│   │   ├── account.py       # Account settings, password/email updates
+│   │   ├── discovery.py     # Multi-platform store discovery & tracking
+│   │   ├── tracked_products.py # Product group CRUD & soft delete
+│   │   ├── scraper.py       # Manual scrape triggers & SSE streams
+│   │   ├── charts.py        # Chart.js visualization data formatting
+│   │   ├── insights.py      # Groq AI insights generation
+│   │   ├── alerts.py        # Alert configuration, history, test email
+│   │   ├── export.py        # Streaming CSV price history export
+│   │   └── pages.py         # Jinja2 server-rendered web pages
 │   ├── core/
-│   │   ├── config.py        # Settings (Pydantic)
-│   │   └── security.py      # JWT verification
+│   │   ├── config.py        # Pydantic BaseSettings & env validation
+│   │   └── security.py      # JWKS ES256 JWT validation & CurrentUser
 │   ├── db/
-│   │   ├── database.py      # Supabase client
-│   │   └── models.py        # Pydantic models
+│   │   ├── database.py      # Supabase client factory (user vs service role)
+│   │   └── models.py        # Pydantic request/response schemas
 │   ├── middleware/
-│   │   └── rate_limit.py    # Rate limiting config
+│   │   └── rate_limit.py    # SlowAPI Redis limiter config
 │   ├── services/
-│   │   ├── store_discovery.py   # Discovery orchestrator
-│   │   ├── store_detector.py    # Platform detection
-│   │   ├── scraper_service.py   # Price extraction
-│   │   ├── ai_service.py        # Groq integration
-│   │   ├── alert_service.py     # Alert logic
-│   │   ├── email_service.py     # Email sending
-│   │   └── stores/              # Platform handlers
-│   │       ├── base.py          # Abstract base
-│   │       ├── shopify.py
-│   │       ├── woocommerce.py
-│   │       └── generic.py
+│   │   ├── store_discovery.py   # Catalog discovery orchestrator
+│   │   ├── store_detector.py    # Platform detection waterfall
+│   │   ├── scraper_service.py   # Price extraction & change detection
+│   │   ├── ai_service.py        # Groq Llama 3.3 70B AI integration
+│   │   ├── alert_service.py     # Price delta alert rule engine
+│   │   ├── email_service.py     # Resend SMTP email digest formatter
+│   │   ├── chart_service.py     # Chart data aggregation service
+│   │   └── stores/              # Platform scraper plugins
+│   │       ├── base.py          # Abstract BaseStoreHandler & DiscoveredProduct
+│   │       ├── shopify.py       # Shopify JSON + GraphQL Storefront handler
+│   │       ├── woocommerce.py   # WooCommerce REST handler
+│   │       └── generic.py       # Schema.org & Playwright fallback
 │   ├── tasks/
-│   │   ├── celery_app.py        # Celery config + Beat schedule
-│   │   └── scraper_tasks.py     # Background tasks
-│   ├── templates/               # Jinja2 HTML templates
-│   └── static/                  # CSS, JS assets
-├── tests/                       # Test suite
-├── docs/                        # Documentation
-│   ├── architecture.md          # System design docs
-│   ├── database_schema.sql      # DB setup
-│   ├── logic_used.md            # Complex logic explanations
-│   └── prd.md                   # Product requirements
-├── main.py                      # FastAPI app
-├── run.py                       # Dev server
-├── test.http                    # VS Code REST Client tests
-├── Dockerfile                   # Docker config
-└── docker-compose.yml           # Multi-service orchestration
+│   │   ├── celery_app.py        # Celery broker config & Beat schedules
+│   │   └── scraper_tasks.py     # Background worker routines & SSE keys
+│   ├── static/                  # Static CSS/JS assets
+│   └── templates/               # Jinja2 HTML templates
+├── docs/                        # Enterprise documentation suite
+│   ├── ARCHITECTURE.md          # Architecture & Sequence flows
+│   ├── DATABASE.md              # Database Schema & Mermaid ERD
+│   ├── API.md                   # REST API Reference & JSON Schemas
+│   ├── WORKERS.md               # Celery Workers & Queue Management
+│   ├── DEPLOYMENT.md            # Docker, Railway & Production Runbook
+│   ├── DEVELOPMENT.md           # Developer Onboarding & Testing Guide
+│   ├── database_schema.sql      # Supabase SQL initialization script
+│   └── prd.md                   # Product Requirements Document
+├── tests/                       # Pytest test suite
+│   ├── conftest.py              # Pytest fixtures & mock environment
+│   ├── test_auth.py             # Authentication endpoint tests
+│   ├── test_health.py           # Health check tests
+│   ├── test_pages.py            # Page rendering & redirect tests
+│   └── test_scraper.py          # Scraper endpoint tests
+├── main.py                      # FastAPI application entry point & middleware
+├── run.py                       # Development server runner
+├── Dockerfile                   # Production multi-stage Docker build
+├── docker-compose.yml           # Multi-service local & production stack
+└── pyproject.toml               # Python project configuration & dependencies
 ```
-
-## Testing
-
-```bash
-# Run all tests
-uv run pytest
-
-# With coverage
-uv run pytest --cov=app --cov-report=html
-
-# Specific test file
-uv run pytest tests/test_auth.py -v
-```
-
-### Manual API Testing
-
-Use `test.http` with VS Code REST Client extension, or:
-
-```bash
-# Health check (no auth)
-curl http://localhost:8000/api/health
-
-# Check worker status
-curl http://localhost:8000/api/scraper/scrape/worker-health
-```
-
-## Configuration
-
-### Rate Limits
-
-| Endpoint Type | Limit |
-|---------------|-------|
-| Auth (login, signup, password reset) | 5/minute |
-| Scraping | 10/minute |
-| General API | 100/minute |
-
-### Alert Settings
-
-Users can configure via API or Account Settings page:
-- `email_enabled`: Toggle alerts on/off
-- `digest_frequency_hours`: 6, 12, or 24 hours
-- `alert_price_drop`: Notify on price drops
-- `alert_price_increase`: Notify on price increases
-
-### Scraping Schedule (Celery Beat)
-
-| Task | Schedule |
-|------|----------|
-| Daily scrape all products | 2:00 AM UTC |
-| Send alert digests | Hourly |
-| Cleanup old alerts | 3:00 AM UTC |
-
-## Security Features
-
-- **Authentication**: Supabase Auth with JWT tokens
-- **Row-Level Security**: Database policies isolate user data
-- **Rate Limiting**: Prevents abuse via slowapi
-- **Security Headers**: X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, HSTS (production)
-- **Input Validation**: Pydantic models validate all inputs
-- **Error Handling**: Generic error messages, detailed server-side logging
-
-## Production Checklist
-
-- [ ] Set `DEBUG=false` in `.env`
-- [ ] Configure CORS origins (replace `*` with your domains)
-- [ ] Enable HTTPS via reverse proxy
-- [ ] Set up database backups
-- [ ] Configure monitoring (Sentry, etc.)
-- [ ] Rotate all secrets from development
-- [ ] Review RLS policies in Supabase
-- [ ] Configure Supabase email templates for password reset
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [docs/architecture.md](docs/architecture.md) | System design, data flows, security model |
-| [docs/logic_used.md](docs/logic_used.md) | Complex algorithm explanations |
-| [docs/prd.md](docs/prd.md) | Product requirements & milestones |
-| [docs/database_schema.sql](docs/database_schema.sql) | Database setup script |
-
-## License
-
-MIT
