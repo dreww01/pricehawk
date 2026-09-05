@@ -62,7 +62,7 @@ def template_response(
     }
     if context:
         ctx.update(context)
-    return templates.TemplateResponse(template_name, ctx)
+    return templates.TemplateResponse(request=request, name=template_name, context=ctx)
 
 
 # ============================================================================
