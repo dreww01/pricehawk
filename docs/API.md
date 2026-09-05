@@ -480,7 +480,7 @@ Date,Time,Competitor,Price,Currency,Status,Error
 - **Response model**: `AlertHistoryListResponse`
 
 ```json
-{"alerts":[{"id":"6ea85f64-5717-4562-b3fc-2c963f66afe5","product_id":"4fa85f64-5717-4562-b3fc-2c963f66afb2","product_name":"Premium Ultrabooks","alert_type":"price_drop","message":"Premium Ultrabooks dropped 6.25%","sent_at":"2025-01-10T03:00:00Z","email_status":"sent"}],"total":1}
+{"alerts":[{"id":"6ea85f64-5717-4562-b3fc-2c963f66afe5","digest_sent_at":"2025-01-10T03:00:00Z","alerts_count":3,"email_status":"sent","error_message":null}],"total":1}
 ```
 
 ### 7.5 Send Test Email
