@@ -140,13 +140,13 @@ uv sync --extra test
 ```
 
 ```bash
-# Run all unit and integration tests
+# Run all unit and integration tests (requires the test extra installed above)
 uv run pytest tests/ -v
 
-# Run tests with code coverage report
+# Run tests with code coverage report (requires the test extra installed above)
 uv run pytest tests/ --cov=app --cov-report=term-missing
 
-# Run a specific test module
+# Run a specific test module (requires the test extra installed above)
 uv run pytest tests/test_auth.py -v
 uv run pytest tests/test_pages.py -v
 uv run pytest tests/test_scraper.py -v
