@@ -44,7 +44,7 @@ flowchart TD
     end
 
     subgraph Broker["Task Queue & Scheduling"]
-        Redis[("Redis 7 Broker & Cache")]
+        Redis[(Redis 7 Broker & Cache)]
         CeleryBeat["Celery Beat Periodic Scheduler"]
         CeleryWorker["Celery Distributed Workers"]
     end
@@ -58,7 +58,7 @@ flowchart TD
     end
 
     subgraph Persistence["Persistence & Security Boundary"]
-        SupabaseDB[("Supabase PostgreSQL")]
+        SupabaseDB[(Supabase PostgreSQL)]
         RLSPolicies["PostgreSQL Row-Level Security (RLS)"]
     end
 
@@ -252,12 +252,12 @@ PriceHawk integrates with the **Groq LPU (Language Processing Unit)** infrastruc
 
 ```mermaid
 flowchart LR
-    History[("30-Day Price History")] --> Aggregator["Statistical Aggregator (Mean, Min, Max, Delta)"]
+    History[(30-Day Price History)] --> Aggregator["Statistical Aggregator (Mean, Min, Max, Delta)"]
     Aggregator --> PrivacySanitizer["Domain Extraction & URL Anonymizer"]
     PrivacySanitizer --> StructuredPrompt["Structured JSON Prompt Builder"]
     StructuredPrompt --> GroqAPI["Groq Llama 3.3 70B (json_object mode)"]
     GroqAPI --> SanitizerValidation["Output Validator & XSS/Injection Filter"]
-    SanitizerValidation --> DBStorage[("insights Table Storage")]
+    SanitizerValidation --> DBStorage[(insights Table Storage)]
 ```
 
 ### Synthesis Pipeline Stages:
