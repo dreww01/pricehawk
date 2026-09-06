@@ -217,9 +217,12 @@ pricehawk/
 │   └── prd.md                   # Product Requirements Document
 ├── tests/                       # Pytest test suite
 │   ├── conftest.py              # Pytest fixtures & mock environment
+│   ├── test_alerts.py           # Alert history & notification tests
 │   ├── test_auth.py             # Authentication endpoint tests
+│   ├── test_dashboard_contract.py # Dashboard helper route contract tests
 │   ├── test_health.py           # Health check tests
 │   ├── test_pages.py            # Page rendering & redirect tests
+│   ├── test_route_contract.py   # OpenAPI route inventory drift tests
 │   └── test_scraper.py          # Scraper endpoint tests
 ├── main.py                      # FastAPI application entry point & middleware
 ├── run.py                       # Development server runner

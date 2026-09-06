@@ -164,9 +164,12 @@ pytest tests/test_health.py -v
 ```
 tests/
 ├── conftest.py          # Pytest fixtures, mock env defaults, TestClient setup
+├── test_alerts.py       # Alert history serialization & notification endpoints
 ├── test_auth.py         # Login, signup, password reset validation tests
+├── test_dashboard_contract.py # Dashboard helper endpoints & route contracts
 ├── test_health.py       # Health check, root redirects, docs availability
 ├── test_pages.py        # Jinja2 template rendering, auth redirects, cookies
+├── test_route_contract.py # OpenAPI route inventory synchronization tests
 └── test_scraper.py      # Scraper auth gates, price history, worker health
 ```
 
