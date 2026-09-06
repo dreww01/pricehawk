@@ -21,7 +21,7 @@ flowchart LR
     RedisBroker --> CeleryWorkers[Celery Worker Pool<br/>Autonomous & Manual Scrapers]
     CeleryWorkers --> ScraperEngines
     
-    ScraperEngines -->|Price Observations| SupabaseDB[(Supabase PostgreSQL<br/>Row-Level Security RLS)]
+    ScraperEngines -->|Price Observations| SupabaseDB[(Supabase PostgreSQL<br/>Core Table RLS)]
     
     CeleryWorkers -->|Historical Analysis| GroqAI[Groq Llama 3.3 70B<br/>AI Pricing Insights]
     GroqAI --> SupabaseDB
@@ -67,7 +67,7 @@ The repository contains an enterprise documentation suite in [`docs/`](docs/):
 | Layer | Technology | Purpose |
 |---|---|---|
 | **API Framework** | FastAPI (Python 3.13+) | Asynchronous HTTP endpoints, OpenAPI 3.0 specs |
-| **Database & Identity** | Supabase (PostgreSQL 15+) | Managed database, JWT Auth with ES256 JWKS, Row-Level Security |
+| **Database & Identity** | Supabase (PostgreSQL 15+) | Managed database, JWT Auth with ES256 JWKS, Core Table Row-Level Security |
 | **Task Queue & Broker** | Celery + Redis | Asynchronous background processing, periodic scheduling |
 | **Web Scraping** | `httpx`, `BeautifulSoup4`, `Playwright` | Multi-engine extraction with headless Chromium |
 | **AI Intelligence** | Groq API (Llama 3.3 70B) | Statistical pattern detection and pricing recommendations |
