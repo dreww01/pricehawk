@@ -98,7 +98,7 @@ sequenceDiagram
 
 ### 2.2 Manual Scrape & Real-Time SSE Progress Streaming
 
-When a user triggers an on-demand scrape, the system offloads work to Celery and streams progress via Server-Sent Events (SSE):
+When a user triggers an on-demand manual scrape (`POST /api/scraper/scrape/manual/{product_id}`), the FastAPI ingress dispatches an asynchronous background task to Celery and immediately returns `HTTP 202 Accepted` containing a tracking `task_id`. The client then opens a Server-Sent Events (SSE) stream (`GET /api/scraper/scrape/stream/{task_id}`) to receive real-time progress updates backed by Redis broker state:
 
 ```mermaid
 sequenceDiagram
