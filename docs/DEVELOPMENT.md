@@ -146,8 +146,10 @@ PriceHawk includes hermetic automated tests covering authentication, route autho
 ### 4.1 Running Tests
 
 ```bash
-# Run all automated tests
+# Run all automated tests (with active venv or via uv run)
 pytest tests/ -v
+# Or directly via uv:
+# uv run pytest tests/ -v
 
 # Run with verbose tracebacks
 pytest tests/ -vv --tb=short

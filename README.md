@@ -158,7 +158,7 @@ The repository contains an enterprise documentation suite in [`docs/`](docs/):
 PriceHawk includes automated hermetic test suites covering auth, route authorization, health endpoints, page rendering, and scraper progress:
 
 ```bash
-# Run all tests
+# Run all tests (or: uv run pytest tests/ -v)
 pytest tests/ -v
 ```
 
