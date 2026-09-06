@@ -29,7 +29,7 @@ Authorization: Bearer <SUPABASE_JWT_ACCESS_TOKEN>
 | **403 Forbidden**   | `{"detail": "Not authorized to access this resource"}` | Tenant ownership mismatch. |
 | **404 Not Found**   | `{"detail": "Resource not found"}` | Entity ID does not exist for the authenticated user. |
 | **422 Unprocessable Entity** | `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}` | Pydantic schema validation error. |
-| **429 Too Many Requests** | `{"detail": "Rate limit exceeded"}` | Request threshold exceeded via `slowapi`. |
+| **429 Too Many Requests** | `{"detail": "Too many requests. Please try again later.", "retry_after": "Rate limit exceeded: 5 per 1 minute"}` | Request threshold exceeded via `slowapi`. |
 | **500 Internal Error** | `{"detail": "An unexpected error occurred. Please try again.", "error_id": "81d18ffa"}` | Unhandled server error with masked diagnostics. |
 
 ---
