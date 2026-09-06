@@ -269,14 +269,12 @@ class PendingAlertsListResponse(BaseModel):
 
 
 class AlertHistoryResponse(BaseModel):
-    """A sent alert in history."""
+    """A sent digest in alert history."""
     id: str
-    product_id: str
-    product_name: str
-    alert_type: str
-    message: str
-    sent_at: datetime
-    email_status: str  # 'sent', 'failed', 'pending'
+    digest_sent_at: datetime | None = None
+    alerts_count: int
+    email_status: str  # 'pending', 'sent', 'failed'
+    error_message: str | None = None
 
 
 class AlertHistoryListResponse(BaseModel):

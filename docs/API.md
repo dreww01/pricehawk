@@ -679,12 +679,10 @@ For unhandled server errors (500), the response includes an `error_id` for backe
     "alerts": [
       {
         "id": "9e0f1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b",
-        "product_id": "8f3b6c2a-9e1d-4f5a-8b7c-1d2e3f4a5b6c",
-        "product_name": "Premium Headphones",
-        "alert_type": "price_drop",
-        "message": "Competitor price drop of -10.0%",
-        "sent_at": "2026-09-02T03:00:00Z",
-        "email_status": "sent"
+        "digest_sent_at": "2026-09-02T03:00:00Z",
+        "alerts_count": 3,
+        "email_status": "sent",
+        "error_message": null
       }
     ],
     "total": 1
