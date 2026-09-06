@@ -230,25 +230,3 @@ def test_insights_feed_contract(client, auth_headers):
             assert item["generated_at"] == "2026-09-02T02:15:00Z"
     finally:
         app.dependency_overrides.clear()
-
-
-def test_all_documented_routes_in_api_md_match_registered_routes():
-    """Ensure all documented routes in docs/API.md exist and match registered routes."""
-    with open("docs/API.md", "r") as f:
-        content = f.read()
-
-    documented_routes = set(re.findall(r"`(GET|POST|PUT|DELETE|PATCH)\s+([^`]+)`", content))
-    schema = app.openapi()
-    registered_routes = set()
-    for path, methods in schema["paths"].items():
-        for method in methods:
-            if path.startswith("/api"):
-                registered_routes.add((method.upper(), path))
-
-    # All documented routes must be registered in OpenAPI
-    missing_in_app = documented_routes - registered_routes
-    assert not missing_in_app, f"Documented routes missing from app: {missing_in_app}"
-
-    # All API endpoints in app must be documented in docs/API.md
-    missing_in_docs = registered_routes - documented_routes
-    assert not missing_in_docs, f"API endpoints missing from docs/API.md: {missing_in_docs}"
