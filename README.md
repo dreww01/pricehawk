@@ -116,7 +116,7 @@ The repository contains an enterprise documentation suite in [`docs/`](docs/):
 
 1. **Install dependencies**:
    ```bash
-   uv sync
+   uv sync --extra test
    source .venv/bin/activate
    ```
 

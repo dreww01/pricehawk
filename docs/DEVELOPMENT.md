@@ -38,8 +38,8 @@ Using `uv` (recommended):
 git clone https://github.com/dreww01/pricehawk.git
 cd pricehawk
 
-# Synchronize virtual environment with all dependencies
-uv sync
+# Synchronize virtual environment with all dependencies including test suite
+uv sync --extra test
 
 # Activate the virtual environment
 source .venv/bin/activate
@@ -51,6 +51,7 @@ Or using standard `python3` / `pip`:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e ".[test]"
 ```
 
 ### 2.2 Install Playwright Chromium Browser
