@@ -32,6 +32,21 @@ Authorization: Bearer <SUPABASE_JWT_ACCESS_TOKEN>
 | **429 Too Many Requests** | `{"detail": "Too many requests. Please try again later.", "retry_after": "Rate limit exceeded: 5 per 1 minute"}` | Request threshold exceeded via `slowapi`. |
 | **500 Internal Error** | `{"detail": "An unexpected error occurred. Please try again.", "error_id": "81d18ffa"}` | Unhandled server error with masked diagnostics. |
 
+### Rate Limiting Policy
+Rate limits are enforced at the application layer via `slowapi` using client IP resolution (supporting `X-Forwarded-For`). Exceeding a limit returns HTTP `429 Too Many Requests` with the standard response:
+```json
+{
+  "detail": "Too many requests. Please try again later.",
+  "retry_after": "Rate limit exceeded: 5 per 1 minute"
+}
+```
+
+| Scope | Limit | Config Constant | Applicable Endpoints |
+| :--- | :--- | :--- | :--- |
+| **Authentication** | 5 req / min | `AUTH_RATE_LIMIT` | `/api/auth/login`, `/api/auth/signup`, `/api/auth/forgot-password`, `/api/auth/verify-reset-otp`, `/api/auth/reset-password` |
+| **Scraping** | 10 req / min | `SCRAPE_RATE_LIMIT` | `/api/scraper/scrape/manual/{product_id}` |
+| **General API** | 100 req / min | `API_RATE_LIMIT` | Default limit across all endpoints |
+
 ---
 
 ## 2. Authentication Endpoints (`/api/auth`)
