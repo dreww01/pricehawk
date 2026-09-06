@@ -57,7 +57,7 @@ The repository contains an enterprise documentation suite in [`docs/`](docs/):
 - **AI-Powered Market Insights**: Groq-hosted Llama 3.3 70B analyzes 30-day time-series data to detect pricing patterns, undercutting alerts, and margin recommendations.
 - **Smart Digest-Based Alerting**: Configurable notification frequencies (6, 12, or 24 hours) via Resend SMTP to eliminate notification fatigue.
 - **Real-Time Progress Streaming**: Asynchronous manual scrapes stream real-time progress via Server-Sent Events (SSE) backed by Redis state.
-- **Defense-in-Depth Security**: Multi-tenant isolation enforced via PostgreSQL Row-Level Security (RLS), ES256 JWKS JWT authentication, SlowAPI rate limiting, and OWASP security headers.
+- **Defense-in-Depth Security**: Multi-tenant isolation enforced via PostgreSQL Row-Level Security (RLS) on core product and tracking tables (`products`, `competitors`, `price_history`, `insights`, `tracking_jobs`), application-level tenant filtering on alert tables (`pending_alerts`, `user_alert_settings`, `alert_history`), ES256 JWKS JWT authentication, SlowAPI rate limiting, and OWASP security headers.
 - **CSV Data Export**: Download complete price history formatted for spreadsheet analysis.
 
 ---

@@ -319,7 +319,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_history_sent_at ON alert_history(digest_sen
 
 ## 5. Row-Level Security (RLS) & Multi-Tenant Isolation
 
-Row-Level Security (RLS) is activated across all tables to guarantee cryptographic tenant separation at the storage engine level.
+Row-Level Security (RLS) is activated across core product and tracking tables (`products`, `competitors`, `price_history`, `insights`, `tracking_jobs`) to guarantee cryptographic tenant separation at the storage engine level, while alert subsystem tables (`pending_alerts`, `user_alert_settings`, `alert_history`) rely on application-level user filtering.
 
 ### 5.1 RLS Activation
 
