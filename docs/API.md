@@ -19,6 +19,7 @@ This document provides a comprehensive REST API specification for **PriceHawk**,
 11. [Alerts & Notification Endpoints (`/api/alerts`)](#11-alerts--notification-endpoints-apialerts)
 12. [CSV Export Endpoints (`/api/export`)](#12-csv-export-endpoints-apiexport)
 13. [System Health Endpoint (`/api/health`)](#13-system-health-endpoint-apihealth)
+14. [Dashboard Helper Endpoints (`/api/dashboard`)](#14-dashboard-helper-endpoints-apidashboard)
 
 ---
 
@@ -545,7 +546,29 @@ For unhandled server errors (500), the response includes an `error_id` for backe
 
 ## 10. AI Insights Endpoints (`/api/insights`)
 
-### 10.1 Get Product Insights
+### 10.1 Get All Insights (Feed)
+`GET /api/insights`
+- **Auth**: Required
+- **Response `200 OK`**:
+  ```json
+  {
+    "insights": [
+      {
+        "id": "3a4b5c6d-7e8f-9a0b-1c2d-3e4f5a6b7c8d",
+        "product_id": "8f3b6c2a-9e1d-4f5a-8b7c-1d2e3f4a5b6c",
+        "product_name": "Sony WH-1000XM5 Wireless Headphones",
+        "insight_text": "Competitor audio-direct.com lowered prices by 10% on weekends over the past 30 days.",
+        "insight_type": "pattern",
+        "generated_at": "2026-09-02T02:15:00Z"
+      }
+    ],
+    "total": 1
+  }
+  ```
+
+---
+
+### 10.2 Get Product Insights
 `GET /api/insights/{product_id}`
 - **Auth**: Required
 - **Response `200 OK`**:
@@ -567,7 +590,7 @@ For unhandled server errors (500), the response includes an `error_id` for backe
 
 ---
 
-### 10.2 Generate AI Insights
+### 10.3 Generate AI Insights
 `POST /api/insights/generate/{product_id}`
 - **Auth**: Required
 - **Request Body**:
@@ -751,5 +774,65 @@ For unhandled server errors (500), the response includes an `error_id` for backe
   ```json
   {
     "status": "healthy"
+  }
+  ```
+
+---
+
+## 14. Dashboard Helper Endpoints (`/api/dashboard`)
+
+### 14.1 Get Dashboard Statistics
+`GET /api/dashboard/stats`
+- **Auth**: Required
+- **Response `200 OK`**:
+  ```json
+  {
+    "products": 5,
+    "competitors": 12,
+    "alerts": 3,
+    "insights": 7
+  }
+  ```
+
+---
+
+### 14.2 Get Dashboard Activity
+`GET /api/dashboard/activity`
+- **Auth**: Required
+- **Response `200 OK`**:
+  ```json
+  {
+    "activity": [
+      {
+        "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "type": "price_drop",
+        "product_id": "8f3b6c2a-9e1d-4f5a-8b7c-1d2e3f4a5b6c",
+        "product_name": "Sony WH-1000XM5 Wireless Headphones",
+        "retailer": "Example Store",
+        "old_price": 349.99,
+        "new_price": 299.99,
+        "change_percent": -14.29,
+        "detected_at": "2026-09-02T02:15:00Z"
+      }
+    ]
+  }
+  ```
+
+---
+
+### 14.3 Get Dashboard Products
+`GET /api/dashboard/products`
+- **Auth**: Required
+- **Response `200 OK`**:
+  ```json
+  {
+    "products": [
+      {
+        "id": "8f3b6c2a-9e1d-4f5a-8b7c-1d2e3f4a5b6c",
+        "product_name": "Sony WH-1000XM5 Wireless Headphones",
+        "is_active": true,
+        "competitor_count": 3
+      }
+    ]
   }
   ```
