@@ -82,15 +82,24 @@ docker run -d -p 6379:6379 --name pricehawk-redis redis:7-alpine
 ```
 
 ### Terminal 2: FastAPI Application Server
-```bash
-# Option A: Run via run.py (binds to port 5000)
-uv run python run.py
-# Server runs on http://127.0.0.1:5000 (Swagger docs at http://127.0.0.1:5000/api/docs)
 
-# Option B: Run via Uvicorn directly (binds to port 8000)
-uv run uvicorn main:app --reload
-# Server runs on http://localhost:8000 (Swagger docs at http://localhost:8000/api/docs)
+#### Option A: Run via `run.py` (Port 5000)
+```bash
+uv run python run.py
 ```
+- **Base Server:** `http://127.0.0.1:5000`
+- **Health Check:** `http://127.0.0.1:5000/api/health`
+- **Swagger Documentation:** `http://127.0.0.1:5000/api/docs`
+- **ReDoc Documentation:** `http://127.0.0.1:5000/api/redoc`
+
+#### Option B: Run via Direct Uvicorn (Port 8000)
+```bash
+uv run uvicorn main:app --reload
+```
+- **Base Server:** `http://localhost:8000`
+- **Health Check:** `http://localhost:8000/api/health`
+- **Swagger Documentation:** `http://localhost:8000/api/docs`
+- **ReDoc Documentation:** `http://localhost:8000/api/redoc`
 
 ### Terminal 3: Celery Background Worker
 ```bash
