@@ -98,10 +98,10 @@ Starts the FastAPI application directly with Uvicorn on default port 8000 with a
 ```bash
 uv run uvicorn main:app --reload
 ```
-- **Base Server:** `http://localhost:8000` (or `http://127.0.0.1:8000`)
-- **Health Check:** `http://localhost:8000/api/health`
-- **Swagger Documentation:** `http://localhost:8000/api/docs`
-- **ReDoc Documentation:** `http://localhost:8000/api/redoc`
+- **Base Server:** `http://127.0.0.1:8000`
+- **Health Check:** `http://127.0.0.1:8000/api/health`
+- **Swagger Documentation:** `http://127.0.0.1:8000/api/docs`
+- **ReDoc Documentation:** `http://127.0.0.1:8000/api/redoc`
 
 ### Terminal 3: Celery Background Worker
 ```bash
