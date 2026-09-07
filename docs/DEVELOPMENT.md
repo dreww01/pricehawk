@@ -94,7 +94,7 @@ uv run python run.py
 - **ReDoc Documentation:** `http://127.0.0.1:5000/api/redoc`
 
 #### Option B: Run via Direct Uvicorn (Default Port 8000)
-Starts the FastAPI application directly with Uvicorn on default port 8000 with auto-reload:
+Starts the FastAPI application directly with Uvicorn CLI on default port 8000 with auto-reload:
 ```bash
 uv run uvicorn main:app --reload
 ```
