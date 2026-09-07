@@ -85,16 +85,16 @@ Persistence behavior:
 
 ```mermaid
 flowchart TD
-    Start[POST /api/insights/generate/{product_id}] --> Own[Validate product ownership]
-    Own --> History[Fetch recent price history]
-    History --> Stats[Compute competitor stats\navg min max current change]
-    Stats --> Prompt[Build pricing expert prompt]
-    Prompt --> Groq[Groq Llama 3.3 70B\nJSON response]
-    Groq --> Parse[Parse JSON insights]
-    Parse --> Validate[Validate type confidence length\nand sanitize text]
-    Validate --> Limit[Cap insight count]
-    Limit --> Store[(Insert insights)]
-    Store --> Return[Return InsightListResponse]
+    Start["POST /api/insights/generate/{product_id}"] --> Own["Validate product ownership"]
+    Own --> History["Fetch recent price history"]
+    History --> Stats["Compute competitor stats<br/>avg min max current change"]
+    Stats --> Prompt["Build pricing expert prompt"]
+    Prompt --> Groq["Groq Llama 3.3 70B<br/>JSON response"]
+    Groq --> Parse["Parse JSON insights"]
+    Parse --> Validate["Validate type confidence length<br/>and sanitize text"]
+    Validate --> Limit["Cap insight count"]
+    Limit --> Store[("Insert insights")]
+    Store --> Return["Return InsightListResponse"]
 ```
 
 Validation exists because LLM output is probabilistic. Accepted insights must have:

@@ -125,12 +125,12 @@ Design rules:
 
 ```mermaid
 flowchart LR
-    History[(price_history)] --> Aggregate[Aggregate 30-day competitor statistics]
-    Aggregate --> Prompt[Build constrained pricing-analysis prompt]
-    Prompt --> Groq[Groq Chat Completion\nLlama 3.3 70B JSON mode]
-    Groq --> Validate[Validate insight_type confidence text length and safety]
-    Validate --> Store[(insights table)]
-    Store --> API[GET /api/insights/{product_id}]
+    History[("price_history")] --> Aggregate["Aggregate 30-day competitor statistics"]
+    Aggregate --> Prompt["Build constrained pricing-analysis prompt"]
+    Prompt --> Groq["Groq Chat Completion<br/>Llama 3.3 70B JSON mode"]
+    Groq --> Validate["Validate insight_type confidence text length and safety"]
+    Validate --> Store[("insights table")]
+    Store --> API["GET /api/insights/{product_id}"]
 ```
 
 `app/services/ai_service.py` generates insight candidates from recent price history, asks Groq for structured JSON, validates each item, caps result volume, and stores accepted insights through the service client. The public API exposes:
