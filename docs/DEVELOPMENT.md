@@ -96,7 +96,7 @@ uv run python run.py
 ```bash
 uv run uvicorn main:app --reload
 ```
-- **Base Server:** `http://localhost:8000`
+- **Base Server:** `http://localhost:8000` (or `http://127.0.0.1:8000`)
 - **Health Check:** `http://localhost:8000/api/health`
 - **Swagger Documentation:** `http://localhost:8000/api/docs`
 - **ReDoc Documentation:** `http://localhost:8000/api/redoc`
