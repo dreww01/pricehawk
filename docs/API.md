@@ -40,7 +40,7 @@ Rate limits are enforced at the application layer via `slowapi` using client IP 
   "retry_after": "Rate limit exceeded: 5 per 1 minute"
 }
 ```
-Clients should inspect `detail` for the human-readable error description and `retry_after` for the specific rate limit quota and interval from the exception.
+Clients should inspect `detail` for the human-readable error description and `retry_after` for the specific rate limit quota and interval string from the `RateLimitExceeded` exception.
 
 | Scope | Limit | Config Constant | Applicable Endpoints |
 | :--- | :--- | :--- | :--- |
