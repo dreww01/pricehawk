@@ -22,7 +22,7 @@ from app.tasks.scraper_tasks import scrape_product_manual, get_scrape_progress
 
 
 router = APIRouter(tags=["scraper"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 class WorkerHealthResponse(BaseModel):
@@ -44,13 +44,15 @@ class WorkerHealthResponse(BaseModel):
 async def manual_scrape(
     request: Request,
     product_id: str,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ScrapeTaskResponse:
     """
     Dispatch scrape task to Celery and return immediately.
     Use /scrape/stream/{task_id} to receive real-time progress via SSE.
     """
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authenticated")
     client = get_supabase_client(credentials.credentials)
 
     # Validate product exists and user owns it
@@ -137,9 +139,11 @@ def get_price_history(
     product_id: str,
     limit: int = 100,
     offset: int = 0,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> PriceHistoryListResponse:
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authenticated")
     client = get_supabase_client(credentials.credentials)
 
     product_result = client.table("products").select("id").eq("id", product_id).execute()
@@ -186,9 +190,11 @@ def get_price_history(
 )
 def get_latest_price(
     competitor_id: str,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> PriceHistoryResponse | None:
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authenticated")
     client = get_supabase_client(credentials.credentials)
 
     competitor_result = client.table("competitors").select("id").eq("id", competitor_id).execute()
@@ -229,7 +235,7 @@ def get_latest_price(
 async def get_chart_data(
     product_id: str,
     days: int = 30,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ChartDataResponse:
     """
@@ -241,6 +247,9 @@ async def get_chart_data(
     - Price change percentages
     - Date ranges
     """
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authenticated")
+
     try:
         chart_service = ChartService()
         chart_data = await chart_service.get_chart_data(product_id, credentials.credentials, days)
