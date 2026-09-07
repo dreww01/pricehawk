@@ -33,14 +33,14 @@ Authorization: Bearer <SUPABASE_JWT_ACCESS_TOKEN>
 | **500 Internal Error** | `{"detail": "An unexpected error occurred. Please try again.", "error_id": "81d18ffa"}` | Unhandled server error with masked diagnostics. |
 
 ### Rate Limiting Policy
-Rate limits are enforced at the application layer via `slowapi` using client IP resolution (supporting `X-Forwarded-For`). Exceeding a limit returns HTTP `429 Too Many Requests` with the standard response matching the registered SlowAPI handler:
+Rate limits are enforced at the application layer via `slowapi` using client IP resolution (supporting `X-Forwarded-For`). Exceeding a limit returns HTTP `429 Too Many Requests` with the standard response matching the registered SlowAPI exception handler:
 ```json
 {
   "detail": "Too many requests. Please try again later.",
   "retry_after": "Rate limit exceeded: 5 per 1 minute"
 }
 ```
-Clients should inspect `detail` for the error description and `retry_after` for the rate limit quota and interval.
+Clients should inspect `detail` for the generic error description and `retry_after` for the specific rate limit quota and interval from the exception.
 
 | Scope | Limit | Config Constant | Applicable Endpoints |
 | :--- | :--- | :--- | :--- |
