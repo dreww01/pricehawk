@@ -83,7 +83,8 @@ docker run -d -p 6379:6379 --name pricehawk-redis redis:7-alpine
 
 ### Terminal 2: FastAPI Application Server
 
-#### Option A: Run via `run.py` (Port 5000)
+#### Option A: Run via `run.py` (Default Port 5000)
+Starts the application server on port 5000 via the `run.py` entrypoint script:
 ```bash
 uv run python run.py
 ```
@@ -92,7 +93,8 @@ uv run python run.py
 - **Swagger Documentation:** `http://127.0.0.1:5000/api/docs`
 - **ReDoc Documentation:** `http://127.0.0.1:5000/api/redoc`
 
-#### Option B: Run via Direct Uvicorn (Port 8000)
+#### Option B: Run via Direct Uvicorn (Default Port 8000)
+Starts the FastAPI application directly with Uvicorn on default port 8000 with auto-reload:
 ```bash
 uv run uvicorn main:app --reload
 ```
