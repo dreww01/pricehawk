@@ -1,5 +1,11 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode
+
+
+DEFAULT_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:8000"]
 
 
 class Settings(BaseSettings):
@@ -11,6 +17,27 @@ class Settings(BaseSettings):
 
     # App
     debug: bool = False
+    env: Literal["development", "staging", "production", "test"] = "development"
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: DEFAULT_CORS_ORIGINS.copy()
+    )
+    default_rate_limit: str = "60/minute"
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def normalize_env(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @property
+    def is_production(self) -> bool:
+        return self.env.lower() == "production"
 
     # Redis/Celery
     redis_url: str = "redis://localhost:6379/0"
