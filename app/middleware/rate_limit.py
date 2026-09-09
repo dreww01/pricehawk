@@ -14,6 +14,8 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.core.config import get_settings
+
 
 def get_client_ip(request: Request) -> str:
     """
@@ -27,7 +29,7 @@ def get_client_ip(request: Request) -> str:
 
 limiter = Limiter(
     key_func=get_client_ip,
-    default_limits=["100/minute"],
+    default_limits=[get_settings().default_rate_limit],
     storage_uri="memory://",
 )
 
