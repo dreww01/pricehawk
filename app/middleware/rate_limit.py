@@ -33,6 +33,14 @@ limiter = Limiter(
     storage_uri="memory://",
 )
 
+# This limiter is isolated so status responses expose quota headers without changing
+# the response signatures of existing limited routes.
+status_limiter = Limiter(
+    key_func=get_client_ip,
+    headers_enabled=True,
+    storage_uri="memory://",
+)
+
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     """Custom handler for rate limit exceeded."""

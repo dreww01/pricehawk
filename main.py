@@ -14,9 +14,26 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from slowapi.errors import RateLimitExceeded
 
-from app.api.routes import auth, tracked_products, scraper, discovery, insights, alerts, export, charts, pages, account
+from app.api.routes import (
+    account,
+    alerts,
+    auth,
+    charts,
+    discovery,
+    export,
+    insights,
+    pages,
+    scraper,
+    system,
+    tracked_products,
+)
 from app.core.config import get_settings
-from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler
+from app.core.version import APPLICATION_VERSION
+from app.middleware.rate_limit import (
+    limiter,
+    rate_limit_exceeded_handler,
+    status_limiter,
+)
 
 
 settings = get_settings()
@@ -62,7 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="PriceHawk API",
     description="Monitor competitor prices, detect changes, and get AI-powered insights",
-    version="0.1.0",
+    version=APPLICATION_VERSION,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -71,6 +88,7 @@ app = FastAPI(
 
 # Rate limiting
 app.state.limiter = limiter
+app.state.status_limiter = status_limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # Static files and templates
@@ -99,6 +117,7 @@ app.include_router(alerts.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(charts.router, prefix="/api")
 app.include_router(account.router, prefix="/api")
+app.include_router(system.router, prefix="/api")
 
 # Page routes (HTML templates)
 app.include_router(pages.router)
