@@ -527,6 +527,96 @@ def test_repeated_task_execution_does_not_redeliver_successful_channel(monkeypat
     assert webhook_service.send_digest.call_count == 2
 
 
+def test_crash_immediately_after_claim_resumes_safely_on_later_run(monkeypatch):
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -10), alert("a2", "price_increase", 5)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    # Simulate worker 1 crashing immediately after claiming
+    digest_id = "stranded-digest-id-1234"
+    for a in client.pending_alerts:
+        a["processing_digest_id"] = digest_id
+        a["included_in_digest"] = False
+
+    # At this point, worker crashed: no alert_history exists, alerts have processing_digest_id
+    assert client.alert_history == {}
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.return_value = {"success": True, "error": None}
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    service = DigestService(email_service, webhook_service)
+
+    # Later run starts (e.g. next Celery run or retry)
+    result = service.run_for_user("user-1", "owner@example.com")
+
+    # Verify that stranded alerts were safely resumed and delivered
+    assert result["status"] == "sent"
+    assert result["alerts_count"] == 2
+    assert result["email_sent"] is True
+    assert result["webhook_sent"] is True
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
+
+    # Verify alerts are marked included and claim cleared
+    assert all(a["included_in_digest"] for a in client.pending_alerts)
+    assert all(a["processing_digest_id"] is None for a in client.pending_alerts)
+    assert client.alert_history[digest_id]["email_status"] == "sent"
+    assert client.alert_history[digest_id]["webhook_status"] == "sent"
+
+
+def test_unexpected_exception_after_claim_does_not_strand_alerts(monkeypatch):
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -10)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    email_service = Mock()
+    # Simulate email configuration error (e.g. ValueError from missing SMTP_PASSWORD)
+    email_service.send_price_alert_digest.side_effect = [
+        ValueError("SMTP_PASSWORD not configured"),
+        {"success": True, "error": None},
+    ]
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    service = DigestService(email_service, webhook_service)
+
+    # First run: unexpected exception during email delivery is gracefully handled,
+    # webhook succeeds, partial delivery state is made durable
+    result1 = service.run_for_user("user-1", "owner@example.com")
+    assert result1["status"] == "failed"
+    assert result1["webhook_sent"] is True
+    assert result1["email_sent"] is False
+
+    # Second run: once email is fixed, later run resumes digest and delivers email
+    # without redelivering webhook
+    result2 = service.run_for_user("user-1", "owner@example.com")
+    assert result2["status"] == "sent"
+    assert result2["webhook_sent"] is True
+    assert result2["email_sent"] is True
+    assert webhook_service.send_digest.call_count == 1  # Not duplicated!
+    assert email_service.send_price_alert_digest.call_count == 2
+
+
 def test_webhook_signature_covers_timestamp_and_exact_json(monkeypatch):
     captured = {}
 

@@ -79,48 +79,59 @@ class DigestService:
         webhook_enabled = bool(settings.get("webhook_enabled"))
         errors: list[str] = []
 
-        if email_enabled:
-            if email_already_sent:
-                result["email_sent"] = True
-            elif not email:
-                errors.append("No recipient email is available")
-            else:
-                email_result = self.email_service.send_price_alert_digest(
-                    to_email=email,
-                    user_name=email.split("@", 1)[0],
-                    alerts=alerts,
-                    digest_period_hours=int(settings.get("digest_frequency_hours") or 24),
-                )
-                result["email_sent"] = bool(email_result.get("success"))
-                if not result["email_sent"]:
-                    errors.append(f"Email: {email_result.get('error', 'delivery failed')}")
-
-        if webhook_enabled:
-            if webhook_already_sent:
-                result["webhook_sent"] = True
-            else:
-                webhook_url = settings.get("webhook_url")
-                webhook_secret = settings.get("webhook_secret")
-                if not webhook_url or not webhook_secret:
-                    errors.append("Webhook: URL and secret must be configured")
+        try:
+            if email_enabled:
+                if email_already_sent:
+                    result["email_sent"] = True
+                elif not email:
+                    errors.append("No recipient email is available")
                 else:
-                    payload = self.build_webhook_payload(digest_id, user_id, alerts, summary)
                     try:
-                        webhook_result = self.webhook_service.send_digest(
-                            webhook_url, webhook_secret, payload
+                        email_result = self.email_service.send_price_alert_digest(
+                            to_email=email,
+                            user_name=email.split("@", 1)[0],
+                            alerts=alerts,
+                            digest_period_hours=int(settings.get("digest_frequency_hours") or 24),
                         )
-                    except WebhookDeliveryError as exc:
-                        webhook_result = {"success": False, "error": str(exc)}
-                    result["webhook_sent"] = bool(webhook_result.get("success"))
-                    if not result["webhook_sent"]:
-                        errors.append(
-                            f"Webhook: {webhook_result.get('error', 'delivery failed')}"
-                        )
+                        result["email_sent"] = bool(email_result.get("success"))
+                        if not result["email_sent"]:
+                            errors.append(f"Email: {email_result.get('error', 'delivery failed')}")
+                    except Exception as exc:
+                        logger.exception("Email delivery error for user %s: %s", user_id, exc)
+                        errors.append(f"Email: {exc}")
 
-        if not email_enabled and not webhook_enabled:
-            errors.append("No notification channel is enabled")
+            if webhook_enabled:
+                if webhook_already_sent:
+                    result["webhook_sent"] = True
+                else:
+                    webhook_url = settings.get("webhook_url")
+                    webhook_secret = settings.get("webhook_secret")
+                    if not webhook_url or not webhook_secret:
+                        errors.append("Webhook: URL and secret must be configured")
+                    else:
+                        payload = self.build_webhook_payload(digest_id, user_id, alerts, summary)
+                        try:
+                            webhook_result = self.webhook_service.send_digest(
+                                webhook_url, webhook_secret, payload
+                            )
+                        except WebhookDeliveryError as exc:
+                            webhook_result = {"success": False, "error": str(exc)}
+                        except Exception as exc:
+                            logger.exception("Webhook delivery error for user %s: %s", user_id, exc)
+                            webhook_result = {"success": False, "error": str(exc)}
+                        result["webhook_sent"] = bool(webhook_result.get("success"))
+                        if not result["webhook_sent"]:
+                            errors.append(
+                                f"Webhook: {webhook_result.get('error', 'delivery failed')}"
+                            )
 
-        success = not errors
+            if not email_enabled and not webhook_enabled:
+                errors.append("No notification channel is enabled")
+        except Exception as exc:
+            logger.exception("Unexpected error processing digest %s for user %s: %s", digest_id, user_id, exc)
+            errors.append(f"Delivery: {exc}")
+
+        success = not errors and (email_enabled or webhook_enabled)
         result["status"] = "sent" if success else "failed"
         self._finalize(
             digest_id,
