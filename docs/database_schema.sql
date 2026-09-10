@@ -126,6 +126,30 @@ CREATE TABLE IF NOT EXISTS alert_history (
 
 
 -- ---------------------------------------------------------------------------
+-- Additive upgrades for existing PriceHawk databases.
+-- Must be applied before indexes or functions reference new columns.
+-- ---------------------------------------------------------------------------
+ALTER TABLE pending_alerts ADD COLUMN IF NOT EXISTS processing_digest_id UUID;
+ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_enabled BOOLEAN DEFAULT FALSE;
+ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_url TEXT;
+ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_drops INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_increases INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS currency_changes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS webhook_status VARCHAR(20) DEFAULT 'disabled';
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS alert_ids UUID[] NOT NULL DEFAULT '{}';
+
+-- Migrate existing check constraints on alert_history for additive statuses (e.g. 'disabled')
+ALTER TABLE alert_history DROP CONSTRAINT IF EXISTS alert_history_email_status_check;
+ALTER TABLE alert_history ADD CONSTRAINT alert_history_email_status_check
+    CHECK (email_status IN ('pending', 'sent', 'failed', 'disabled'));
+
+ALTER TABLE alert_history DROP CONSTRAINT IF EXISTS alert_history_webhook_status_check;
+ALTER TABLE alert_history ADD CONSTRAINT alert_history_webhook_status_check
+    CHECK (webhook_status IN ('pending', 'sent', 'failed', 'disabled'));
+
+
+-- ---------------------------------------------------------------------------
 -- SECTION 2: Indexes for Performance
 -- ---------------------------------------------------------------------------
 
@@ -163,17 +187,6 @@ CREATE INDEX IF NOT EXISTS idx_alert_history_user_id ON alert_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_alert_history_sent_at ON alert_history(digest_sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pending_alerts_digest_claim
     ON pending_alerts(user_id, included_in_digest, processing_digest_id, detected_at);
-
--- Additive upgrades for existing PriceHawk databases.
-ALTER TABLE pending_alerts ADD COLUMN IF NOT EXISTS processing_digest_id UUID;
-ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_enabled BOOLEAN DEFAULT FALSE;
-ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_url TEXT;
-ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
-ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_drops INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_increases INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS currency_changes INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS webhook_status VARCHAR(20) DEFAULT 'disabled';
-ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS alert_ids UUID[] NOT NULL DEFAULT '{}';
 
 
 -- ---------------------------------------------------------------------------
