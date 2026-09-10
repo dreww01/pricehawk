@@ -666,3 +666,57 @@ def test_webhook_rejects_private_network_targets(monkeypatch):
         WebhookService().send_digest(
             "https://localhost/hooks", "a-secure-secret-value", {"event": "test"}
         )
+
+
+def test_webhook_dns_rebinding_cannot_reach_private_destination(monkeypatch):
+    dns_responses = [
+        # 1st call during validation: public address
+        [(None, None, None, None, ("93.184.216.34", 443))],
+        # 2nd call during connection: private address (DNS rebinding)
+        [(None, None, None, None, ("127.0.0.1", 443))],
+    ]
+
+    def mock_getaddrinfo(*args, **kwargs):
+        if dns_responses:
+            return dns_responses.pop(0)
+        return [(None, None, None, None, ("127.0.0.1", 443))]
+
+    connection_targets = []
+
+    def mock_create_connection(address, *args, **kwargs):
+        connection_targets.append(address)
+        raise ConnectionRefusedError("connection blocked")
+
+    monkeypatch.setattr("app.services.webhook_service.socket.getaddrinfo", mock_getaddrinfo)
+    monkeypatch.setattr("httpcore._backends.sync.socket.create_connection", mock_create_connection)
+
+    with pytest.raises(WebhookDeliveryError, match="private or reserved|DNS rebinding"):
+        WebhookService().send_digest(
+            "https://attacker.example.test/webhook",
+            "a-secure-secret-value",
+            {"event": "test"},
+        )
+
+    # Confirms the request cannot reach the second private address
+    assert all(addr[0] != "127.0.0.1" for addr in connection_targets)
+    assert len(connection_targets) == 0
+
+
+@pytest.mark.parametrize("private_ip", [
+    "::1",
+    "fe80::1",
+    "fc00::1",
+    "::ffff:127.0.0.1",
+    "::ffff:169.254.169.254",
+    "169.254.169.254",
+    "10.0.0.1",
+])
+def test_webhook_rejects_all_address_family_private_destinations(monkeypatch, private_ip):
+    monkeypatch.setattr("app.services.webhook_service.socket.getaddrinfo", lambda *args: [
+        (None, None, None, None, (private_ip, 443))
+    ])
+
+    with pytest.raises(WebhookDeliveryError, match="private or reserved"):
+        WebhookService().send_digest(
+            "https://unsafe.example.test/webhook", "a-secure-secret-value", {"event": "test"}
+        )
