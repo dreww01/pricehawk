@@ -13,6 +13,7 @@ from app.services.webhook_service import WebhookDeliveryError, WebhookService
 logger = logging.getLogger(__name__)
 
 MAX_ALERTS_PER_DIGEST = 50
+DEFAULT_LEASE_DURATION = timedelta(minutes=5)
 
 
 class DigestService:
@@ -22,10 +23,12 @@ class DigestService:
         self,
         email_service: EmailService | None = None,
         webhook_service: WebhookService | None = None,
+        lease_duration: timedelta = DEFAULT_LEASE_DURATION,
     ) -> None:
         self.client = get_supabase_client()
         self.email_service = email_service or EmailService()
         self.webhook_service = webhook_service or WebhookService()
+        self.lease_duration = lease_duration
 
     def run_for_user(
         self,
@@ -40,6 +43,9 @@ class DigestService:
             return self._empty_result(user_id, dry_run, "alert_settings_not_found")
 
         existing_claim = self._get_in_flight_claim(user_id) if not dry_run else None
+        if existing_claim and existing_claim.get("is_active"):
+            return self._empty_result(user_id, dry_run, "in_flight_claim_active")
+
         if not force and not existing_claim and not self._is_due(settings):
             return self._empty_result(user_id, dry_run, "frequency_window_not_elapsed")
 
@@ -79,6 +85,17 @@ class DigestService:
         webhook_enabled = bool(settings.get("webhook_enabled"))
         errors: list[str] = []
 
+        self._acquire_lease(
+            digest_id=digest_id,
+            user_id=user_id,
+            alerts=alerts,
+            summary=summary,
+            email_enabled=email_enabled,
+            webhook_enabled=webhook_enabled,
+            email_already_sent=email_already_sent,
+            webhook_already_sent=webhook_already_sent,
+        )
+
         try:
             if email_enabled:
                 if email_already_sent:
@@ -96,6 +113,18 @@ class DigestService:
                         result["email_sent"] = bool(email_result.get("success"))
                         if not result["email_sent"]:
                             errors.append(f"Email: {email_result.get('error', 'delivery failed')}")
+                        else:
+                            self._record_channel_progress(
+                                digest_id=digest_id,
+                                user_id=user_id,
+                                alerts=alerts,
+                                summary=summary,
+                                email_status="sent",
+                                webhook_status=(
+                                    "sent" if webhook_already_sent
+                                    else ("pending" if webhook_enabled else "disabled")
+                                ),
+                            )
                     except Exception as exc:
                         logger.exception("Email delivery error for user %s: %s", user_id, exc)
                         errors.append(f"Email: {exc}")
@@ -280,6 +309,29 @@ class DigestService:
             "detected_at": row["detected_at"],
         }
 
+    def _is_claim_active(self, digest_id: str) -> bool:
+        history = self._get_digest_history(digest_id)
+        if not history:
+            return False
+
+        email_status = history.get("email_status")
+        webhook_status = history.get("webhook_status")
+
+        if email_status != "pending" and webhook_status != "pending":
+            return False
+
+        sent_at_raw = history.get("digest_sent_at")
+        if not sent_at_raw:
+            return False
+
+        try:
+            sent_at = datetime.fromisoformat(str(sent_at_raw).replace("Z", "+00:00"))
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - sent_at) < self.lease_duration
+        except Exception:
+            return False
+
     def _get_in_flight_claim(self, user_id: str) -> dict[str, Any] | None:
         response = (
             self.client.table("pending_alerts")
@@ -297,23 +349,121 @@ class DigestService:
         )
         if not response.data:
             return None
-        digest_id = response.data[0].get("processing_digest_id")
-        if not digest_id:
+
+        distinct_digest_ids: list[str] = []
+        for row in response.data:
+            did = row.get("processing_digest_id")
+            if did and str(did) not in distinct_digest_ids:
+                distinct_digest_ids.append(str(did))
+
+        if not distinct_digest_ids:
             return None
+
+        for did in distinct_digest_ids:
+            if self._is_claim_active(did):
+                return {"is_active": True, "digest_id": did}
+
+        target_digest_id = distinct_digest_ids[0]
+        digest_response = (
+            self.client.table("pending_alerts")
+            .select(
+                "id, alert_type, old_price, new_price, price_change_percent, "
+                "old_currency, new_currency, detected_at, processing_digest_id, "
+                "products(product_name), competitors(retailer_name, url)"
+            )
+            .eq("user_id", user_id)
+            .eq("included_in_digest", False)
+            .eq("processing_digest_id", target_digest_id)
+            .order("detected_at")
+            .limit(MAX_ALERTS_PER_DIGEST)
+            .execute()
+        )
+        rows = digest_response.data if digest_response.data else response.data
+        matching_alerts = [
+            self._normalize_alert(row)
+            for row in rows
+            if str(row.get("processing_digest_id")) == target_digest_id
+        ]
+        if not matching_alerts:
+            return None
+
         return {
-            "digest_id": digest_id,
-            "alerts": [self._normalize_alert(row) for row in response.data],
+            "is_active": False,
+            "digest_id": target_digest_id,
+            "alerts": matching_alerts,
         }
 
     def _get_digest_history(self, digest_id: str) -> dict[str, Any] | None:
         response = (
             self.client.table("alert_history")
-            .select("email_status, webhook_status")
+            .select("id, email_status, webhook_status, digest_sent_at")
             .eq("id", digest_id)
             .limit(1)
             .execute()
         )
         return response.data[0] if response.data else None
+
+    def _acquire_lease(
+        self,
+        digest_id: str,
+        user_id: str,
+        alerts: list[dict[str, Any]],
+        summary: dict[str, Any],
+        *,
+        email_enabled: bool,
+        webhook_enabled: bool,
+        email_already_sent: bool,
+        webhook_already_sent: bool,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        counts = summary["counts"]
+        initial_email_status = (
+            "sent" if email_already_sent
+            else ("pending" if email_enabled else "disabled")
+        )
+        initial_webhook_status = (
+            "sent" if webhook_already_sent
+            else ("pending" if webhook_enabled else "disabled")
+        )
+        self.client.table("alert_history").upsert(
+            {
+                "id": digest_id,
+                "user_id": user_id,
+                "digest_sent_at": now,
+                "alerts_count": len(alerts),
+                **counts,
+                "email_status": initial_email_status,
+                "webhook_status": initial_webhook_status,
+                "error_message": None,
+                "alert_ids": [alert["id"] for alert in alerts],
+            }
+        ).execute()
+
+    def _record_channel_progress(
+        self,
+        digest_id: str,
+        user_id: str,
+        alerts: list[dict[str, Any]],
+        summary: dict[str, Any],
+        *,
+        email_status: str,
+        webhook_status: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        counts = summary["counts"]
+        self.client.table("alert_history").upsert(
+            {
+                "id": digest_id,
+                "user_id": user_id,
+                "digest_sent_at": now,
+                "alerts_count": len(alerts),
+                **counts,
+                "email_status": email_status,
+                "webhook_status": webhook_status,
+                "error_message": None,
+                "alert_ids": [alert["id"] for alert in alerts],
+            }
+        ).execute()
 
     def _finalize(
         self,

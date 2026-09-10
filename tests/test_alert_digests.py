@@ -509,13 +509,17 @@ class StatefulDigestClient:
                         return SimpleNamespace(data=[])
                     elif self.action == "select":
                         user_id = None
+                        target_digest = None
                         for f, args, _ in self.filters:
                             if f == "eq" and args[0] == "user_id":
                                 user_id = args[1]
+                            if f == "eq" and args[0] == "processing_digest_id":
+                                target_digest = args[1]
                         res = [
                             a
                             for a in client.pending_alerts
                             if (user_id is None or a["user_id"] == user_id)
+                            and (target_digest is None or a.get("processing_digest_id") == target_digest)
                             and not a["included_in_digest"]
                             and a["processing_digest_id"] is not None
                         ]
@@ -767,6 +771,187 @@ def test_unexpected_exception_after_claim_does_not_strand_alerts(monkeypatch):
     assert result2["email_sent"] is True
     assert webhook_service.send_digest.call_count == 1  # Not duplicated!
     assert email_service.send_price_alert_digest.call_count == 2
+
+
+def test_concurrent_worker_execution_does_not_duplicate_delivery(monkeypatch):
+    """Verify that when a second worker starts while a first worker is in-flight,
+
+    the second worker detects the active lease, avoids duplicate channel delivery,
+    and returns a skipped status without interfering with the first worker.
+    """
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -15), alert("a2", "price_increase", 8)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    email_service = Mock()
+    webhook_service = Mock()
+
+    worker2_result = None
+    service = DigestService(email_service, webhook_service)
+
+    def email_delivery_with_concurrent_worker(*args, **kwargs):
+        nonlocal worker2_result
+        worker2 = DigestService(email_service, webhook_service)
+        worker2_result = worker2.run_for_user("user-1", "owner@example.com")
+        return {"success": True, "error": None}
+
+    email_service.send_price_alert_digest.side_effect = email_delivery_with_concurrent_worker
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    worker1_result = service.run_for_user("user-1", "owner@example.com")
+
+    # Worker 1 succeeds
+    assert worker1_result["status"] == "sent"
+    assert worker1_result["email_sent"] is True
+    assert worker1_result["webhook_sent"] is True
+
+    # Worker 2 detected the active claim and skipped
+    assert worker2_result is not None
+    assert worker2_result["status"] == "skipped"
+    assert worker2_result["skipped_reason"] == "in_flight_claim_active"
+    assert worker2_result["email_sent"] is False
+    assert worker2_result["webhook_sent"] is False
+
+    # Each channel was delivered at most once across both workers
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
+
+    # Alerts were finalized once
+    assert all(a["included_in_digest"] for a in client.pending_alerts)
+    assert all(a["processing_digest_id"] is None for a in client.pending_alerts)
+
+
+def test_claims_from_different_digest_ids_are_never_combined(monkeypatch):
+    """Verify that when unfinalized claims exist for multiple digest IDs,
+
+    a worker resumes alerts belonging to exactly one digest ID and never combines
+    alerts across different digest IDs.
+    """
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [
+        alert("a1", "price_drop", -10),
+        alert("a2", "price_drop", -20),
+        alert("b1", "price_increase", 15),
+        alert("b2", "price_increase", 25),
+    ]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    digest_a = "digest-aaa-1111"
+    digest_b = "digest-bbb-2222"
+    client.pending_alerts[0]["processing_digest_id"] = digest_a
+    client.pending_alerts[1]["processing_digest_id"] = digest_a
+    client.pending_alerts[2]["processing_digest_id"] = digest_b
+    client.pending_alerts[3]["processing_digest_id"] = digest_b
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.return_value = {"success": True, "error": None}
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    service = DigestService(email_service, webhook_service)
+
+    # First run resumes digest_a ONLY
+    result1 = service.run_for_user("user-1", "owner@example.com")
+    assert result1["status"] == "sent"
+    assert result1["alerts_count"] == 2
+
+    payload1 = webhook_service.send_digest.call_args.args[2]
+    assert payload1["digest_id"] == digest_a
+    assert [a["id"] for a in payload1["alerts"]] == ["a1", "a2"]
+
+    email_alerts1 = email_service.send_price_alert_digest.call_args.kwargs["alerts"]
+    assert [a["id"] for a in email_alerts1] == ["a1", "a2"]
+
+    # Alerts for digest_a are finalized, while digest_b remain pending and untouched
+    assert client.pending_alerts[0]["included_in_digest"] is True
+    assert client.pending_alerts[1]["included_in_digest"] is True
+    assert client.pending_alerts[0]["processing_digest_id"] is None
+    assert client.pending_alerts[1]["processing_digest_id"] is None
+
+    assert client.pending_alerts[2]["included_in_digest"] is False
+    assert client.pending_alerts[3]["included_in_digest"] is False
+    assert client.pending_alerts[2]["processing_digest_id"] == digest_b
+    assert client.pending_alerts[3]["processing_digest_id"] == digest_b
+
+    # Second run resumes digest_b ONLY
+    result2 = service.run_for_user("user-1", "owner@example.com")
+    assert result2["status"] == "sent"
+    assert result2["alerts_count"] == 2
+
+    payload2 = webhook_service.send_digest.call_args.args[2]
+    assert payload2["digest_id"] == digest_b
+    assert [a["id"] for a in payload2["alerts"]] == ["b1", "b2"]
+
+    email_alerts2 = email_service.send_price_alert_digest.call_args.kwargs["alerts"]
+    assert [a["id"] for a in email_alerts2] == ["b1", "b2"]
+
+    # All alerts are now finalized
+    assert all(a["included_in_digest"] for a in client.pending_alerts)
+    assert all(a["processing_digest_id"] is None for a in client.pending_alerts)
+
+
+def test_expired_lease_claim_is_recovered(monkeypatch):
+    """Verify that an abandoned claim with an expired lease is recovered by a later worker."""
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -10)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    digest_id = "expired-lease-digest-1234"
+    client.pending_alerts[0]["processing_digest_id"] = digest_id
+
+    # Lease was acquired 10 minutes ago with pending status (expired under 5-minute lease)
+    expired_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    client.alert_history[digest_id] = {
+        "id": digest_id,
+        "user_id": "user-1",
+        "digest_sent_at": expired_time,
+        "alerts_count": 1,
+        "email_status": "pending",
+        "webhook_status": "pending",
+    }
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.return_value = {"success": True, "error": None}
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    service = DigestService(email_service, webhook_service)
+    result = service.run_for_user("user-1", "owner@example.com")
+
+    assert result["status"] == "sent"
+    assert result["email_sent"] is True
+    assert result["webhook_sent"] is True
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
+    assert client.alert_history[digest_id]["email_status"] == "sent"
+    assert client.alert_history[digest_id]["webhook_status"] == "sent"
 
 
 def test_webhook_signature_covers_timestamp_and_exact_json(monkeypatch):
