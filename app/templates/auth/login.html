@@ -33,6 +33,37 @@
 
         <h2 class="text-xl font-semibold text-center text-gray-900 dark:text-white mb-6">Welcome Back</h2>
 
+        <!-- Flash Notice Container (Server-rendered) -->
+        {% if flash_messages %}
+            <div id="flash-notices" class="mb-4 space-y-2">
+                {% for message in flash_messages %}
+                    <div class="p-3.5 rounded-lg text-sm flex items-center gap-2.5 border
+                        {% if message.type == 'warning' %}bg-amber-500/10 border-amber-500/20 text-amber-500
+                        {% elif message.type == 'error' %}bg-red-500/10 border-red-500/20 text-red-500
+                        {% elif message.type == 'success' %}bg-green-500/10 border-green-500/20 text-green-500
+                        {% else %}bg-blue-500/10 border-blue-500/20 text-blue-400{% endif %}">
+                        {% if message.type == 'warning' %}
+                            <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                        {% elif message.type == 'error' %}
+                            <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        {% else %}
+                            <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        {% endif %}
+                        <span class="flex-1 font-medium">{{ message.text }}</span>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        <!-- Client-side Flash Notice Placeholder -->
+        <div id="client-flash-notice" class="hidden mb-4 p-3.5 rounded-lg text-sm flex items-center gap-2.5 border"></div>
+
         <!-- Error message -->
         <div id="error-message" class="hidden mb-4 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -98,6 +129,48 @@
         const btnText = document.getElementById('btn-text');
         const btnLoading = document.getElementById('btn-loading');
 
+        const urlParams = new URLSearchParams(window.location.search);
+        const notice = urlParams.get('notice');
+        const message = urlParams.get('message');
+        const nextParam = urlParams.get('next');
+        const clientNotice = document.getElementById('client-flash-notice');
+        const serverNotices = document.getElementById('flash-notices');
+
+        // Client-side fallback if server-rendered notices were not present
+        if (!serverNotices && clientNotice) {
+            if (notice === 'session_expired' || urlParams.get('expired') !== null) {
+                clientNotice.className = 'mb-4 p-3.5 rounded-lg text-sm flex items-center gap-2.5 border bg-amber-500/10 border-amber-500/20 text-amber-500';
+                clientNotice.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <span class="flex-1 font-medium">Your session has expired. Please log in again.</span>
+                `;
+                clientNotice.classList.remove('hidden');
+            } else if (notice === 'login_required' || nextParam) {
+                clientNotice.className = 'mb-4 p-3.5 rounded-lg text-sm flex items-center gap-2.5 border bg-blue-500/10 border-blue-500/20 text-blue-400';
+                clientNotice.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span class="flex-1 font-medium">Please log in to access this page.</span>
+                `;
+                clientNotice.classList.remove('hidden');
+            } else if (message) {
+                clientNotice.className = 'mb-4 p-3.5 rounded-lg text-sm flex items-center gap-2.5 border bg-blue-500/10 border-blue-500/20 text-blue-400';
+                const textSpan = document.createElement('span');
+                textSpan.className = 'flex-1 font-medium';
+                textSpan.textContent = message;
+                clientNotice.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                `;
+                clientNotice.appendChild(textSpan);
+                clientNotice.classList.remove('hidden');
+            }
+        }
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             submitBtn.disabled = true;
@@ -119,7 +192,12 @@
 
                 if (response.ok) {
                     document.cookie = `access_token=${data.access_token}; path=/; SameSite=Strict`;
-                    window.location.href = '/dashboard';
+                    const nextUrl = urlParams.get('next');
+                    if (nextUrl && nextUrl.startsWith('/') && !nextUrl.startsWith('//')) {
+                        window.location.href = nextUrl;
+                    } else {
+                        window.location.href = '/dashboard';
+                    }
                 } else {
                     throw new Error(data.detail || 'Login failed');
                 }

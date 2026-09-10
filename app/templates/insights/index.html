@@ -70,9 +70,13 @@
         const insightsList = document.getElementById('insights-list');
 
         try {
-            const response = await fetch('/api/insights', {
-                headers: { 'Authorization': `Bearer ${accessToken}` }
-            });
+            const headers = accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {};
+            const response = await fetch('/api/insights', { headers });
+
+            if (response.status === 401) {
+                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname) + '&notice=session_expired';
+                return;
+            }
 
             if (!response.ok) throw new Error('Failed to load insights');
 

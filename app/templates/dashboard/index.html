@@ -154,7 +154,15 @@
 
 <script>
     const token = getCookie('access_token');
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+    function handleAuthError(response) {
+        if (response.status === 401) {
+            window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname) + '&notice=session_expired';
+            return true;
+        }
+        return false;
+    }
 
     async function loadDashboard() {
         await Promise.all([
@@ -167,6 +175,7 @@
     async function loadStats() {
         try {
             const response = await fetch('/api/dashboard/stats', { headers });
+            if (handleAuthError(response)) return;
             if (response.ok) {
                 const data = await response.json();
                 document.getElementById('stat-products').textContent = data.products;
@@ -192,6 +201,7 @@
         const container = document.getElementById('recent-products');
         try {
             const response = await fetch('/api/dashboard/products', { headers });
+            if (handleAuthError(response)) return;
             if (response.ok) {
                 const data = await response.json();
                 if (data.products.length === 0) {
@@ -228,6 +238,7 @@
         const container = document.getElementById('recent-activity');
         try {
             const response = await fetch('/api/dashboard/activity', { headers });
+            if (handleAuthError(response)) return;
             if (response.ok) {
                 const data = await response.json();
                 if (data.activity.length === 0) {

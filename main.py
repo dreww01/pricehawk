@@ -4,6 +4,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -154,6 +155,28 @@ def root():
 def health_check() -> dict:
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.exception_handler(401)
+async def unauthorized_handler(request: Request, exc: HTTPException):
+    """Handle 401 errors by redirecting browser requests to login with return path."""
+    if "text/html" in request.headers.get("accept", ""):
+        destination = request.url.path
+        if request.url.query:
+            destination = f"{request.url.path}?{request.url.query}"
+        if not destination.startswith("/") or destination.startswith("//"):
+            destination = "/dashboard"
+        err_detail = str(getattr(exc, "detail", "")).lower()
+        notice = "session_expired" if "expired" in err_detail else "login_required"
+        return RedirectResponse(
+            url=f"/login?next={quote(destination, safe='/')}&notice={notice}",
+            status_code=303,
+        )
+    return JSONResponse(
+        status_code=401,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
 
 
 @app.exception_handler(404)
