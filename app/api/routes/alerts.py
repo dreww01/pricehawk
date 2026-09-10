@@ -5,7 +5,7 @@ Handles user alert settings, pending alerts, alert history, and test emails.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from supabase import Client
 
@@ -18,10 +18,12 @@ from app.db.models import (
     PendingAlertResponse,
     AlertHistoryListResponse,
     AlertHistoryResponse,
+    DigestRunRequest,
+    DigestRunResponse,
     TestEmailRequest
 )
 from app.services.email_service import EmailService
-from app.services.alert_service import AlertService
+from app.services.digest_service import DigestService
 
 
 class AcceptCurrencyRequest(BaseModel):
@@ -30,6 +32,22 @@ class AcceptCurrencyRequest(BaseModel):
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+
+def _settings_response(settings: dict) -> AlertSettingsResponse:
+    return AlertSettingsResponse(
+        user_id=settings["user_id"],
+        email_enabled=settings.get("email_enabled", True),
+        digest_frequency_hours=settings.get("digest_frequency_hours", 24),
+        alert_price_drop=settings.get("alert_price_drop", True),
+        alert_price_increase=settings.get("alert_price_increase", True),
+        webhook_enabled=settings.get("webhook_enabled", False),
+        webhook_url=settings.get("webhook_url"),
+        webhook_secret_configured=bool(settings.get("webhook_secret")),
+        last_digest_sent_at=settings.get("last_digest_sent_at"),
+        created_at=settings["created_at"],
+        updated_at=settings["updated_at"],
+    )
 
 
 @router.get("/settings", response_model=AlertSettingsResponse)
@@ -53,16 +71,7 @@ async def get_alert_settings(
 
         if response.data:
             settings = response.data[0]
-            return AlertSettingsResponse(
-                user_id=settings["user_id"],
-                email_enabled=settings["email_enabled"],
-                digest_frequency_hours=settings["digest_frequency_hours"],
-                alert_price_drop=settings["alert_price_drop"],
-                alert_price_increase=settings["alert_price_increase"],
-                last_digest_sent_at=settings.get("last_digest_sent_at"),
-                created_at=settings["created_at"],
-                updated_at=settings["updated_at"]
-            )
+            return _settings_response(settings)
 
         # Create default settings if none exist
         default_settings = {
@@ -81,16 +90,7 @@ async def get_alert_settings(
 
         if create_response.data:
             settings = create_response.data[0]
-            return AlertSettingsResponse(
-                user_id=settings["user_id"],
-                email_enabled=settings["email_enabled"],
-                digest_frequency_hours=settings["digest_frequency_hours"],
-                alert_price_drop=settings["alert_price_drop"],
-                alert_price_increase=settings["alert_price_increase"],
-                last_digest_sent_at=settings.get("last_digest_sent_at"),
-                created_at=settings["created_at"],
-                updated_at=settings["updated_at"]
-            )
+            return _settings_response(settings)
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -119,6 +119,20 @@ async def update_alert_settings(
     Only provided fields will be updated.
     """
     try:
+        if updates.webhook_enabled is True and updates.webhook_url is None:
+            existing = (
+                sb.table("user_alert_settings")
+                .select("webhook_url")
+                .eq("user_id", current_user.id)
+                .limit(1)
+                .execute()
+            )
+            if not existing.data or not existing.data[0].get("webhook_url"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="webhook_url is required when enabling webhooks",
+                )
+
         # Build update dict (only include non-None fields)
         update_data = {}
         if updates.email_enabled is not None:
@@ -129,6 +143,12 @@ async def update_alert_settings(
             update_data["alert_price_drop"] = updates.alert_price_drop
         if updates.alert_price_increase is not None:
             update_data["alert_price_increase"] = updates.alert_price_increase
+        if updates.webhook_enabled is not None:
+            update_data["webhook_enabled"] = updates.webhook_enabled
+        if updates.webhook_url is not None:
+            update_data["webhook_url"] = updates.webhook_url
+        if updates.webhook_secret is not None:
+            update_data["webhook_secret"] = updates.webhook_secret
 
         if not update_data:
             raise HTTPException(
@@ -163,16 +183,7 @@ async def update_alert_settings(
 
         if response.data:
             settings = response.data[0]
-            return AlertSettingsResponse(
-                user_id=settings["user_id"],
-                email_enabled=settings["email_enabled"],
-                digest_frequency_hours=settings["digest_frequency_hours"],
-                alert_price_drop=settings["alert_price_drop"],
-                alert_price_increase=settings["alert_price_increase"],
-                last_digest_sent_at=settings.get("last_digest_sent_at"),
-                created_at=settings["created_at"],
-                updated_at=settings["updated_at"]
-            )
+            return _settings_response(settings)
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -241,7 +252,7 @@ async def get_pending_alerts(
 
 @router.get("/history", response_model=AlertHistoryListResponse)
 async def get_alert_history(
-    limit: int = 20,
+    limit: int = Query(default=20, ge=1, le=100),
     sb: Client = Depends(get_user_supabase_client),
     current_user: CurrentUser = Depends(get_current_user)
 ):
@@ -251,7 +262,10 @@ async def get_alert_history(
     try:
         response = (
             sb.table("alert_history")
-            .select("id, digest_sent_at, alerts_count, email_status, error_message")
+            .select(
+                "id, digest_sent_at, alerts_count, price_drops, price_increases, "
+                "currency_changes, email_status, webhook_status, error_message"
+            )
             .eq("user_id", current_user.id)
             .order("digest_sent_at", desc=True)
             .limit(limit)
@@ -263,7 +277,11 @@ async def get_alert_history(
                 id=row["id"],
                 digest_sent_at=row["digest_sent_at"],
                 alerts_count=row["alerts_count"],
+                price_drops=row.get("price_drops", 0),
+                price_increases=row.get("price_increases", 0),
+                currency_changes=row.get("currency_changes", 0),
                 email_status=row["email_status"],
+                webhook_status=row.get("webhook_status", "disabled"),
                 error_message=row.get("error_message")
             )
             for row in response.data
@@ -277,6 +295,36 @@ async def get_alert_history(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to load alert history"
         )
+
+
+@router.post("/digests/run", response_model=DigestRunResponse)
+async def run_alert_digest(
+    request: DigestRunRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Run the current user's digest, optionally forcing or previewing it."""
+    try:
+        if request.force and current_user.role not in {"admin", "service_role"}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators may force a digest run",
+            )
+        return DigestRunResponse(
+            **DigestService().run_for_user(
+                current_user.id,
+                current_user.email,
+                force=request.force,
+                dry_run=request.dry_run,
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to run digest for user %s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to run alert digest",
+        ) from exc
 
 
 @router.post("/test")
