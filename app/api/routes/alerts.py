@@ -119,18 +119,38 @@ async def update_alert_settings(
     Only provided fields will be updated.
     """
     try:
-        if updates.webhook_enabled is True and updates.webhook_url is None:
-            existing = (
-                sb.table("user_alert_settings")
-                .select("webhook_url")
-                .eq("user_id", current_user.id)
-                .limit(1)
-                .execute()
+        if updates.webhook_enabled is True:
+            needs_existing_url = not updates.webhook_url
+            needs_existing_secret = not updates.webhook_secret
+
+            existing_record = None
+            if needs_existing_url or needs_existing_secret:
+                existing = (
+                    sb.table("user_alert_settings")
+                    .select("webhook_url, webhook_secret")
+                    .eq("user_id", current_user.id)
+                    .limit(1)
+                    .execute()
+                )
+                if existing.data:
+                    existing_record = existing.data[0]
+
+            effective_url = updates.webhook_url or (
+                existing_record.get("webhook_url") if existing_record else None
             )
-            if not existing.data or not existing.data[0].get("webhook_url"):
+            effective_secret = updates.webhook_secret or (
+                existing_record.get("webhook_secret") if existing_record else None
+            )
+
+            if not effective_url:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="webhook_url is required when enabling webhooks",
+                )
+            if not effective_secret or len(effective_secret) < 16:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="webhook_secret (at least 16 characters) is required when enabling webhooks",
                 )
 
         # Build update dict (only include non-None fields)

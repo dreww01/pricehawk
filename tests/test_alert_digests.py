@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.security import CurrentUser, get_current_user
+from app.db.database import get_user_supabase_client
 from app.db.models import AlertSettingsUpdate
 from app.services.digest_service import DigestService
 from app.services.webhook_service import WebhookDeliveryError, WebhookService
@@ -146,6 +147,157 @@ def test_alert_settings_validate_secure_webhook_configuration():
         webhook_secret="a-secure-secret-value",
     )
     assert update.webhook_enabled is True
+
+
+class MockAlertSettingsDB:
+    def __init__(self, initial_data=None):
+        self.data = dict(initial_data or {})
+
+    def table(self, name):
+        assert name == "user_alert_settings"
+        db = self
+
+        class SettingsQuery:
+            def __init__(self):
+                self.filters = {}
+                self.action = "select"
+                self.payload = {}
+
+            def select(self, *args, **kwargs):
+                self.action = "select"
+                return self
+
+            def eq(self, col, val):
+                self.filters[col] = val
+                return self
+
+            def limit(self, val):
+                return self
+
+            def update(self, payload):
+                self.action = "update"
+                self.payload = payload
+                return self
+
+            def insert(self, payload):
+                self.action = "insert"
+                self.payload = payload
+                return self
+
+            def execute(self):
+                if self.action == "select":
+                    if db.data:
+                        return SimpleNamespace(data=[dict(db.data)])
+                    return SimpleNamespace(data=[])
+                elif self.action in ("update", "insert"):
+                    db.data.update(self.payload)
+                    result = {
+                        "user_id": "user-1",
+                        "email_enabled": True,
+                        "digest_frequency_hours": 24,
+                        "alert_price_drop": True,
+                        "alert_price_increase": True,
+                        "webhook_enabled": False,
+                        "webhook_url": None,
+                        "webhook_secret": None,
+                        "last_digest_sent_at": None,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z",
+                    }
+                    result.update(db.data)
+                    return SimpleNamespace(data=[result])
+                return SimpleNamespace(data=[])
+
+        return SettingsQuery()
+
+
+def test_enable_webhook_with_new_complete_configuration(client):
+    db = MockAlertSettingsDB({"user_id": "user-1", "webhook_enabled": False, "webhook_url": None, "webhook_secret": None})
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="user-1", email="owner@example.com", role="authenticated")
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+
+    try:
+        response = client.put(
+            "/api/alerts/settings",
+            json={
+                "webhook_enabled": True,
+                "webhook_url": "https://hooks.example.test/alerts",
+                "webhook_secret": "a-sufficiently-strong-secret-16chars",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["webhook_enabled"] is True
+    assert data["webhook_url"] == "https://hooks.example.test/alerts"
+    assert data["webhook_secret_configured"] is True
+
+
+def test_enable_webhook_with_stored_credentials(client):
+    db = MockAlertSettingsDB({
+        "user_id": "user-1",
+        "webhook_enabled": False,
+        "webhook_url": "https://hooks.example.test/stored",
+        "webhook_secret": "existing-secret-16chars",
+    })
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="user-1", email="owner@example.com", role="authenticated")
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+
+    try:
+        response = client.put(
+            "/api/alerts/settings",
+            json={"webhook_enabled": True},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["webhook_enabled"] is True
+    assert data["webhook_url"] == "https://hooks.example.test/stored"
+    assert data["webhook_secret_configured"] is True
+
+
+def test_enable_webhook_rejected_when_missing_secret(client):
+    db = MockAlertSettingsDB({"user_id": "user-1", "webhook_enabled": False, "webhook_url": None, "webhook_secret": None})
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="user-1", email="owner@example.com", role="authenticated")
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+
+    try:
+        response = client.put(
+            "/api/alerts/settings",
+            json={
+                "webhook_enabled": True,
+                "webhook_url": "https://hooks.example.test/alerts",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "webhook_secret" in response.json()["detail"]
+
+
+def test_enable_webhook_rejected_when_missing_url(client):
+    db = MockAlertSettingsDB({"user_id": "user-1", "webhook_enabled": False, "webhook_url": None, "webhook_secret": None})
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(id="user-1", email="owner@example.com", role="authenticated")
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+
+    try:
+        response = client.put(
+            "/api/alerts/settings",
+            json={
+                "webhook_enabled": True,
+                "webhook_secret": "a-sufficiently-strong-secret-16chars",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "webhook_url" in response.json()["detail"]
 
 
 def test_digest_summary_counts_and_orders_biggest_drops():
