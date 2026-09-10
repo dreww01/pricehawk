@@ -52,6 +52,8 @@ class DigestService:
         if existing_claim:
             digest_id = str(existing_claim["digest_id"])
             alerts = existing_claim["alerts"]
+            if not self._acquire_claim_ownership(digest_id, user_id, alerts, is_new=False):
+                return self._empty_result(user_id, dry_run, "in_flight_claim_active")
         else:
             digest_id = str(uuid4())
             alerts = self._load_alerts(user_id, digest_id, dry_run)
@@ -288,7 +290,11 @@ class DigestService:
                     "p_limit": MAX_ALERTS_PER_DIGEST,
                 },
             ).execute()
-        return [self._normalize_alert(row) for row in (response.data or [])]
+        alerts = [self._normalize_alert(row) for row in (response.data or [])]
+        if not dry_run and alerts:
+            if not self._acquire_claim_ownership(digest_id, user_id, alerts, is_new=True):
+                return []
+        return alerts
 
     @staticmethod
     def _normalize_alert(row: dict[str, Any]) -> dict[str, Any]:
@@ -403,6 +409,87 @@ class DigestService:
         )
         return response.data[0] if response.data else None
 
+    def _acquire_claim_ownership(
+        self,
+        digest_id: str,
+        user_id: str,
+        alerts: list[dict[str, Any]],
+        *,
+        is_new: bool,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        history = self._get_digest_history(digest_id)
+
+        if is_new:
+            if history:
+                return True
+            try:
+                res = (
+                    self.client.table("alert_history")
+                    .insert(
+                        {
+                            "id": digest_id,
+                            "user_id": user_id,
+                            "digest_sent_at": now,
+                            "alerts_count": len(alerts),
+                            "price_drops": 0,
+                            "price_increases": 0,
+                            "currency_changes": 0,
+                            "email_status": "pending",
+                            "webhook_status": "pending",
+                            "alert_ids": [alert["id"] for alert in alerts],
+                            "error_message": None,
+                        }
+                    )
+                    .execute()
+                )
+                if getattr(res, "data", None) is None:
+                    return False
+                return True
+            except Exception:
+                return False
+
+        # Taking over an existing claim
+        if history:
+            old_sent_at = history.get("digest_sent_at")
+            query = (
+                self.client.table("alert_history")
+                .update({"digest_sent_at": now})
+                .eq("id", digest_id)
+            )
+            if old_sent_at:
+                query = query.eq("digest_sent_at", old_sent_at)
+            res = query.execute()
+            if getattr(res, "data", None) is None:
+                return False
+            return True
+        else:
+            try:
+                res = (
+                    self.client.table("alert_history")
+                    .insert(
+                        {
+                            "id": digest_id,
+                            "user_id": user_id,
+                            "digest_sent_at": now,
+                            "alerts_count": len(alerts),
+                            "price_drops": 0,
+                            "price_increases": 0,
+                            "currency_changes": 0,
+                            "email_status": "pending",
+                            "webhook_status": "pending",
+                            "alert_ids": [alert["id"] for alert in alerts],
+                            "error_message": None,
+                        }
+                    )
+                    .execute()
+                )
+                if getattr(res, "data", None) is None:
+                    return False
+                return True
+            except Exception:
+                return False
+
     def _acquire_lease(
         self,
         digest_id: str,
@@ -425,9 +512,8 @@ class DigestService:
             "sent" if webhook_already_sent
             else ("pending" if webhook_enabled else "disabled")
         )
-        self.client.table("alert_history").upsert(
+        self.client.table("alert_history").update(
             {
-                "id": digest_id,
                 "user_id": user_id,
                 "digest_sent_at": now,
                 "alerts_count": len(alerts),
@@ -437,7 +523,7 @@ class DigestService:
                 "error_message": None,
                 "alert_ids": [alert["id"] for alert in alerts],
             }
-        ).execute()
+        ).eq("id", digest_id).execute()
 
     def _record_channel_progress(
         self,
@@ -451,9 +537,8 @@ class DigestService:
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         counts = summary["counts"]
-        self.client.table("alert_history").upsert(
+        self.client.table("alert_history").update(
             {
-                "id": digest_id,
                 "user_id": user_id,
                 "digest_sent_at": now,
                 "alerts_count": len(alerts),
@@ -463,7 +548,7 @@ class DigestService:
                 "error_message": None,
                 "alert_ids": [alert["id"] for alert in alerts],
             }
-        ).execute()
+        ).eq("id", digest_id).execute()
 
     def _finalize(
         self,
@@ -487,9 +572,8 @@ class DigestService:
             "sent" if result["webhook_sent"]
             else ("failed" if webhook_enabled else "disabled")
         )
-        self.client.table("alert_history").upsert(
+        self.client.table("alert_history").update(
             {
-                "id": digest_id,
                 "user_id": user_id,
                 "digest_sent_at": now,
                 "alerts_count": len(alerts),
@@ -499,7 +583,7 @@ class DigestService:
                 "error_message": "; ".join(errors)[:1000] or None,
                 "alert_ids": [alert["id"] for alert in alerts],
             }
-        ).execute()
+        ).eq("id", digest_id).execute()
 
         if success:
             self.client.table("pending_alerts").update(

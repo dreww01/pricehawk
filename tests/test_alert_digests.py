@@ -449,6 +449,21 @@ class StatefulDigestClient:
                 ):
                     a["processing_digest_id"] = digest_id
                     claimed.append(a)
+            if claimed:
+                now = datetime.now(timezone.utc).isoformat()
+                self.alert_history[digest_id] = {
+                    "id": digest_id,
+                    "user_id": p_user_id,
+                    "digest_sent_at": now,
+                    "alerts_count": len(claimed),
+                    "price_drops": sum(1 for x in claimed if x.get("alert_type") == "price_drop"),
+                    "price_increases": sum(1 for x in claimed if x.get("alert_type") == "price_increase"),
+                    "currency_changes": sum(1 for x in claimed if x.get("alert_type") == "currency_changed"),
+                    "email_status": "pending",
+                    "webhook_status": "pending",
+                    "alert_ids": [x["id"] for x in claimed],
+                    "error_message": None,
+                }
             return Query(claimed)
         return Query([])
 
@@ -485,9 +500,30 @@ class StatefulDigestClient:
                     return SimpleNamespace(data=client.settings)
 
                 elif self.table_name == "alert_history":
-                    if self.action in ("upsert", "insert"):
+                    if self.action == "insert":
+                        target_id = self.payload.get("id")
+                        if target_id in client.alert_history:
+                            return SimpleNamespace(data=None)
+                        client.alert_history[target_id] = dict(self.payload)
+                        return SimpleNamespace(data=[self.payload])
+                    elif self.action == "upsert":
                         client.alert_history[self.payload["id"]] = dict(self.payload)
                         return SimpleNamespace(data=[self.payload])
+                    elif self.action == "update":
+                        target_id = None
+                        target_sent_at = None
+                        for f, args, _ in self.filters:
+                            if f == "eq" and args[0] == "id":
+                                target_id = args[1]
+                            if f == "eq" and args[0] == "digest_sent_at":
+                                target_sent_at = args[1]
+                        if target_id and target_id in client.alert_history:
+                            row = client.alert_history[target_id]
+                            if target_sent_at is not None and row.get("digest_sent_at") != target_sent_at:
+                                return SimpleNamespace(data=None)
+                            row.update(self.payload)
+                            return SimpleNamespace(data=[row])
+                        return SimpleNamespace(data=None)
                     elif self.action == "select":
                         digest_id = None
                         for f, args, _ in self.filters:
@@ -828,6 +864,130 @@ def test_concurrent_worker_execution_does_not_duplicate_delivery(monkeypatch):
     # Alerts were finalized once
     assert all(a["included_in_digest"] for a in client.pending_alerts)
     assert all(a["processing_digest_id"] is None for a in client.pending_alerts)
+
+
+def test_concurrent_worker_paused_immediately_after_claim_before_delivery_setup(monkeypatch):
+    """Verify that when worker 1 pauses immediately after the pending-alert claim commits
+
+    but before delivery setup, starting worker 2 results in only one worker acquiring
+    ownership and delivering each channel.
+    """
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -15), alert("a2", "price_increase", 8)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.return_value = {"success": True, "error": None}
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    worker1 = DigestService(email_service, webhook_service)
+    worker2 = DigestService(email_service, webhook_service)
+
+    worker2_result = None
+    orig_rpc = client.rpc
+
+    def rpc_pause_after_claim(name, params):
+        nonlocal worker2_result
+        res = orig_rpc(name, params)
+        if name == "claim_pending_alerts":
+            # The pending-alert claim has committed!
+            # Pause worker 1 immediately after the claim commits but before delivery setup,
+            # and start worker 2.
+            worker2_result = worker2.run_for_user("user-1", "owner@example.com")
+        return res
+
+    client.rpc = rpc_pause_after_claim
+
+    worker1_result = worker1.run_for_user("user-1", "owner@example.com")
+
+    # Worker 1 succeeds and delivers both channels
+    assert worker1_result["status"] == "sent"
+    assert worker1_result["email_sent"] is True
+    assert worker1_result["webhook_sent"] is True
+
+    # Worker 2 was started during the pause before delivery setup;
+    # it detects active lease ownership, avoids duplicate delivery, and skips
+    assert worker2_result is not None
+    assert worker2_result["status"] == "skipped"
+    assert worker2_result["skipped_reason"] == "in_flight_claim_active"
+    assert worker2_result["email_sent"] is False
+    assert worker2_result["webhook_sent"] is False
+
+    # Each channel was delivered exactly once across both workers
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
+
+    # Alerts were finalized once
+    assert all(a["included_in_digest"] for a in client.pending_alerts)
+    assert all(a["processing_digest_id"] is None for a in client.pending_alerts)
+
+
+def test_concurrent_workers_competing_for_expired_lease_takeover(monkeypatch):
+    """Verify that when two workers compete to take over an expired lease,
+
+    only one worker successfully acquires ownership and delivers.
+    """
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -10)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    digest_id = "expired-digest-race-1234"
+    client.pending_alerts[0]["processing_digest_id"] = digest_id
+
+    expired_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    client.alert_history[digest_id] = {
+        "id": digest_id,
+        "user_id": "user-1",
+        "digest_sent_at": expired_time,
+        "alerts_count": 1,
+        "email_status": "pending",
+        "webhook_status": "pending",
+    }
+
+    email_service = Mock()
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    worker1 = DigestService(email_service, webhook_service)
+    worker2 = DigestService(email_service, webhook_service)
+
+    worker2_result = None
+
+    def email_with_concurrent_worker(*args, **kwargs):
+        nonlocal worker2_result
+        # While worker 1 has taken over and is delivering, worker 2 tries to run
+        worker2_result = worker2.run_for_user("user-1", "owner@example.com")
+        return {"success": True, "error": None}
+
+    email_service.send_price_alert_digest.side_effect = email_with_concurrent_worker
+
+    worker1_result = worker1.run_for_user("user-1", "owner@example.com")
+
+    assert worker1_result["status"] == "sent"
+    assert worker2_result is not None
+    assert worker2_result["status"] == "skipped"
+    assert worker2_result["skipped_reason"] == "in_flight_claim_active"
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
 
 
 def test_claims_from_different_digest_ids_are_never_combined(monkeypatch):

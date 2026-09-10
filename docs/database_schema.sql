@@ -254,6 +254,24 @@ BEGIN
         FROM claimed
         WHERE pa.id = claimed.id
         RETURNING pa.*
+    ), lease AS (
+        INSERT INTO alert_history (
+            id,
+            user_id,
+            alerts_count,
+            email_status,
+            webhook_status,
+            digest_sent_at
+        )
+        SELECT
+            p_digest_id,
+            p_user_id,
+            COUNT(*)::INTEGER,
+            'pending',
+            'pending',
+            NOW()
+        FROM updated
+        WHERE EXISTS (SELECT 1 FROM updated)
     )
     SELECT u.id, u.alert_type, u.old_price, u.new_price,
            u.price_change_percent, u.old_currency, u.new_currency, u.detected_at,
