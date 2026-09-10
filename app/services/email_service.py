@@ -115,11 +115,18 @@ class EmailService:
         drops = sum(1 for a in alerts if a.get("alert_type") == "price_drop")
         increases = sum(1 for a in alerts if a.get("alert_type") == "price_increase")
 
+        currency_changes = sum(
+            1 for a in alerts if a.get("alert_type") == "currency_changed"
+        )
         subject_parts = []
         if drops > 0:
             subject_parts.append(f"{drops} price drop{'s' if drops > 1 else ''}")
         if increases > 0:
             subject_parts.append(f"{increases} price increase{'s' if increases > 1 else ''}")
+        if currency_changes > 0:
+            subject_parts.append(
+                f"{currency_changes} currency change{'s' if currency_changes > 1 else ''}"
+            )
 
         subject = f"PriceHawk Alert: {' & '.join(subject_parts)}"
         subject = self._sanitize_text(subject, max_length=self.config.MAX_SUBJECT_LENGTH)
@@ -269,14 +276,28 @@ class EmailService:
                 max_length=self.config.MAX_PRODUCT_NAME_LENGTH
             )
             competitor_name = self._sanitize_text(alert.get("competitor_name", "Unknown Competitor"))
-            old_price = float(alert.get("old_price", 0))
-            new_price = float(alert.get("new_price", 0))
-            change_percent = float(alert.get("price_change_percent", 0))
+            old_price = float(alert.get("old_price") or 0)
+            new_price = float(alert.get("new_price") or 0)
+            change_percent = float(alert.get("price_change_percent") or 0)
             currency = alert.get("currency", "USD")
 
-            # Determine color based on alert type
-            color = "#16a34a" if alert_type == "price_drop" else "#dc2626"
-            arrow = "↓" if alert_type == "price_drop" else "↑"
+            if alert_type == "currency_changed":
+                color = "#d97706"
+                change_label = self._sanitize_text(
+                    f"Currency changed: {alert.get('old_currency') or 'unknown'} → "
+                    f"{alert.get('new_currency') or 'unknown'}"
+                )
+                price_label = "Review the competitor currency before comparing prices."
+            else:
+                color = "#16a34a" if alert_type == "price_drop" else "#dc2626"
+                arrow = "↓" if alert_type == "price_drop" else "↑"
+                change_label = f"{arrow} {abs(change_percent):.1f}%"
+                price_label = (
+                    f'<span style="text-decoration: line-through; color: #9ca3af;">'
+                    f"{currency} {old_price:.2f}</span>"
+                    f'<strong style="margin-left: 10px; color: {color};">'
+                    f"{currency} {new_price:.2f}</strong>"
+                )
 
             alerts_html += f"""
             <div style="background-color: #f9fafb; border-left: 4px solid {color}; padding: 15px; margin-bottom: 15px; border-radius: 4px;">
@@ -285,11 +306,10 @@ class EmailService:
                     <strong>Store:</strong> {competitor_name}
                 </p>
                 <p style="margin: 10px 0; font-size: 18px; color: {color};">
-                    <strong>{arrow} {abs(change_percent):.1f}%</strong>
+                    <strong>{change_label}</strong>
                 </p>
                 <p style="margin: 5px 0; color: #374151; font-size: 14px;">
-                    <span style="text-decoration: line-through; color: #9ca3af;">{currency} {old_price:.2f}</span>
-                    <strong style="margin-left: 10px; color: {color};">{currency} {new_price:.2f}</strong>
+                    {price_label}
                 </p>
             </div>
             """
@@ -358,18 +378,27 @@ class EmailService:
                 max_length=self.config.MAX_PRODUCT_NAME_LENGTH
             )
             competitor_name = self._sanitize_text(alert.get("competitor_name", "Unknown Competitor"))
-            old_price = float(alert.get("old_price", 0))
-            new_price = float(alert.get("new_price", 0))
-            change_percent = float(alert.get("price_change_percent", 0))
+            old_price = float(alert.get("old_price") or 0)
+            new_price = float(alert.get("new_price") or 0)
+            change_percent = float(alert.get("price_change_percent") or 0)
             currency = alert.get("currency", "USD")
 
-            arrow = "↓" if alert_type == "price_drop" else "↑"
+            if alert_type == "currency_changed":
+                detail_lines = [
+                    f"   Currency: {alert.get('old_currency') or 'unknown'} → "
+                    f"{alert.get('new_currency') or 'unknown'}"
+                ]
+            else:
+                arrow = "↓" if alert_type == "price_drop" else "↑"
+                detail_lines = [
+                    f"   Change: {arrow} {abs(change_percent):.1f}%",
+                    f"   Price: {currency} {old_price:.2f} → {currency} {new_price:.2f}",
+                ]
 
             lines.extend([
                 f"{i}. {product_name}",
                 f"   Store: {competitor_name}",
-                f"   Change: {arrow} {abs(change_percent):.1f}%",
-                f"   Price: {currency} {old_price:.2f} → {currency} {new_price:.2f}",
+                *detail_lines,
                 "",
             ])
 

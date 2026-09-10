@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS pending_alerts (
     old_currency VARCHAR(3),
     new_currency VARCHAR(3),
     included_in_digest BOOLEAN DEFAULT FALSE,
+    processing_digest_id UUID,
     detected_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -100,6 +101,9 @@ CREATE TABLE IF NOT EXISTS user_alert_settings (
     digest_frequency_hours INTEGER DEFAULT 24,
     alert_price_drop BOOLEAN DEFAULT TRUE,
     alert_price_increase BOOLEAN DEFAULT TRUE,
+    webhook_enabled BOOLEAN DEFAULT FALSE,
+    webhook_url TEXT,
+    webhook_secret TEXT,
     last_digest_sent_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -111,9 +115,38 @@ CREATE TABLE IF NOT EXISTS alert_history (
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     digest_sent_at TIMESTAMPTZ DEFAULT NOW(),
     alerts_count INTEGER NOT NULL,
-    email_status VARCHAR(20) DEFAULT 'pending' CHECK (email_status IN ('pending', 'sent', 'failed')),
+    price_drops INTEGER NOT NULL DEFAULT 0,
+    price_increases INTEGER NOT NULL DEFAULT 0,
+    currency_changes INTEGER NOT NULL DEFAULT 0,
+    email_status VARCHAR(20) DEFAULT 'pending' CHECK (email_status IN ('pending', 'sent', 'failed', 'disabled')),
+    webhook_status VARCHAR(20) DEFAULT 'disabled' CHECK (webhook_status IN ('pending', 'sent', 'failed', 'disabled')),
+    alert_ids UUID[] NOT NULL DEFAULT '{}',
     error_message TEXT
 );
+
+
+-- ---------------------------------------------------------------------------
+-- Additive upgrades for existing PriceHawk databases.
+-- Must be applied before indexes or functions reference new columns.
+-- ---------------------------------------------------------------------------
+ALTER TABLE pending_alerts ADD COLUMN IF NOT EXISTS processing_digest_id UUID;
+ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_enabled BOOLEAN DEFAULT FALSE;
+ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_url TEXT;
+ALTER TABLE user_alert_settings ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_drops INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_increases INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS currency_changes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS webhook_status VARCHAR(20) DEFAULT 'disabled';
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS alert_ids UUID[] NOT NULL DEFAULT '{}';
+
+-- Migrate existing check constraints on alert_history for additive statuses (e.g. 'disabled')
+ALTER TABLE alert_history DROP CONSTRAINT IF EXISTS alert_history_email_status_check;
+ALTER TABLE alert_history ADD CONSTRAINT alert_history_email_status_check
+    CHECK (email_status IN ('pending', 'sent', 'failed', 'disabled'));
+
+ALTER TABLE alert_history DROP CONSTRAINT IF EXISTS alert_history_webhook_status_check;
+ALTER TABLE alert_history ADD CONSTRAINT alert_history_webhook_status_check
+    CHECK (webhook_status IN ('pending', 'sent', 'failed', 'disabled'));
 
 
 -- ---------------------------------------------------------------------------
@@ -152,6 +185,8 @@ CREATE INDEX IF NOT EXISTS idx_user_alert_settings_user_id ON user_alert_setting
 -- Alert history indexes
 CREATE INDEX IF NOT EXISTS idx_alert_history_user_id ON alert_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_alert_history_sent_at ON alert_history(digest_sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pending_alerts_digest_claim
+    ON pending_alerts(user_id, included_in_digest, processing_digest_id, detected_at);
 
 
 -- ---------------------------------------------------------------------------
@@ -175,6 +210,81 @@ CREATE TRIGGER products_updated_at
   BEFORE UPDATE ON products
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS user_alert_settings_updated_at ON user_alert_settings;
+CREATE TRIGGER user_alert_settings_updated_at
+  BEFORE UPDATE ON user_alert_settings
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE OR REPLACE FUNCTION claim_pending_alerts(
+    p_user_id UUID,
+    p_digest_id UUID,
+    p_limit INTEGER DEFAULT 50
+)
+RETURNS TABLE (
+    id UUID,
+    alert_type VARCHAR,
+    old_price DECIMAL,
+    new_price DECIMAL,
+    price_change_percent DECIMAL,
+    old_currency VARCHAR,
+    new_currency VARCHAR,
+    detected_at TIMESTAMPTZ,
+    product_name VARCHAR,
+    competitor_name VARCHAR,
+    competitor_url TEXT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    WITH claimed AS (
+        SELECT pa.id
+        FROM pending_alerts pa
+        WHERE pa.user_id = p_user_id
+          AND pa.included_in_digest = FALSE
+          AND pa.processing_digest_id IS NULL
+        ORDER BY pa.detected_at
+        FOR UPDATE SKIP LOCKED
+        LIMIT LEAST(GREATEST(p_limit, 1), 50)
+    ), updated AS (
+        UPDATE pending_alerts pa
+        SET processing_digest_id = p_digest_id
+        FROM claimed
+        WHERE pa.id = claimed.id
+        RETURNING pa.*
+    ), lease AS (
+        INSERT INTO alert_history (
+            id,
+            user_id,
+            alerts_count,
+            email_status,
+            webhook_status,
+            digest_sent_at
+        )
+        SELECT
+            p_digest_id,
+            p_user_id,
+            COUNT(*)::INTEGER,
+            'pending',
+            'pending',
+            NOW()
+        FROM updated
+        WHERE EXISTS (SELECT 1 FROM updated)
+    )
+    SELECT u.id, u.alert_type, u.old_price, u.new_price,
+           u.price_change_percent, u.old_currency, u.new_currency, u.detected_at,
+           p.product_name, COALESCE(c.retailer_name, 'Unknown Store'), c.url
+    FROM updated u
+    JOIN products p ON p.id = u.product_id
+    JOIN competitors c ON c.id = u.competitor_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION claim_pending_alerts(UUID, UUID, INTEGER) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION claim_pending_alerts(UUID, UUID, INTEGER) TO service_role;
+
 
 -- ---------------------------------------------------------------------------
 -- SECTION 4: Row Level Security (RLS) Policies
@@ -186,6 +296,9 @@ ALTER TABLE competitors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE price_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE insights ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tracking_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pending_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_alert_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alert_history ENABLE ROW LEVEL SECURITY;
 
 -- ---------------------------------------------------------------------------
 -- Products Table Policies
@@ -359,6 +472,19 @@ CREATE POLICY "Service can manage tracking jobs"
     FOR ALL
     USING (true)
     WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Users can view own pending alerts" ON pending_alerts;
+CREATE POLICY "Users can view own pending alerts"
+    ON pending_alerts FOR SELECT USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "Users can manage own alert settings" ON user_alert_settings;
+CREATE POLICY "Users can manage own alert settings"
+    ON user_alert_settings FOR ALL
+    USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "Users can view own alert history" ON alert_history;
+CREATE POLICY "Users can view own alert history"
+    ON alert_history FOR SELECT USING (user_id = auth.uid());
 
 
 -- ---------------------------------------------------------------------------

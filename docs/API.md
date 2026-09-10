@@ -254,7 +254,8 @@ Response:
 | `GET` | `/api/alerts/settings` | None | Get or create default user alert settings. |
 | `PUT` | `/api/alerts/settings` | partial settings | Update alert settings. |
 | `GET` | `/api/alerts/pending` | None | List pending, not-yet-digested alerts. |
-| `GET` | `/api/alerts/history` | `limit`, default 20 | List digest send history. |
+| `GET` | `/api/alerts/history` | `limit`, default 20, max 100 | List digest delivery history. |
+| `POST` | `/api/alerts/digests/run` | `{"force":false,"dry_run":false}` | Run the current user's digest and return channel/count totals. Dry runs never claim or clear alerts; `force=true` requires an admin/service-role JWT. |
 | `POST` | `/api/alerts/test` | optional `email` | Send a test email. |
 | `PATCH` | `/api/alerts/competitors/{competitor_id}/accept-currency` | `{"currency":"USD"}` | Accept detected currency for one competitor. |
 | `POST` | `/api/alerts/accept-all-currencies` | None | Accept all pending currency changes for current user. |
@@ -262,8 +263,14 @@ Response:
 Settings request:
 
 ```json
-{"email_enabled":true,"digest_frequency_hours":12,"alert_price_drop":true,"alert_price_increase":false}
+{"email_enabled":true,"digest_frequency_hours":12,"alert_price_drop":true,"alert_price_increase":false,"webhook_enabled":true,"webhook_url":"https://hooks.example.com/pricehawk","webhook_secret":"replace-with-at-least-16-characters"}
 ```
+
+Webhook deliveries use canonical JSON and include `X-PriceHawk-Timestamp` plus
+`X-PriceHawk-Signature: sha256=<hex>`. Consumers should compute HMAC-SHA256 over
+`<timestamp>.<raw request body>` with their configured secret, compare signatures
+in constant time, and reject stale timestamps. Redirects, credential-bearing URLs,
+and destinations resolving to private/reserved networks are rejected.
 
 ### Export
 

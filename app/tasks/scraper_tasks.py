@@ -10,7 +10,7 @@ from app.tasks.celery_app import celery_app
 from app.db.database import get_supabase_client
 from app.services.scraper_service import scrape_and_check_alerts, scrape_url
 from app.services.alert_service import AlertService
-from app.services.email_service import EmailService
+from app.services.digest_service import DigestService
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -296,109 +296,44 @@ def check_worker_health() -> dict:
 
 
 @celery_app.task(bind=True)
-def send_alert_digests(self) -> dict:
-    """
-    Send digest emails to users who have pending alerts and are due.
-
-    Runs every hour via Celery Beat.
-    Checks each user's digest_frequency_hours setting and sends accordingly.
-    """
+def send_alert_digests(self, force: bool = False, dry_run: bool = False) -> dict:
+    """Run batched digests for configured users."""
     client = get_supabase_client()
-    alert_service = AlertService()
-    email_service = EmailService()
+    settings_response = (
+        client.table("user_alert_settings")
+        .select("user_id")
+        .or_("email_enabled.eq.true,webhook_enabled.eq.true")
+        .execute()
+    )
+    digest_service = DigestService()
+    results = []
 
-    # Get users due for digest
-    users_due = asyncio.run(alert_service.get_users_due_for_digest())
-
-    total_users = len(users_due)
-    sent = 0
-    failed = 0
-
-    logger.info(f"Found {total_users} users due for alert digest")
-
-    for user_data in users_due:
-        user_id = user_data["user_id"]
-        email = user_data["email"]
-        digest_hours = user_data["digest_frequency_hours"]
-        pending_count = user_data["pending_count"]
-
+    for setting in settings_response.data or []:
+        user_id = setting["user_id"]
         try:
-            # Get pending alerts for user
-            alerts = asyncio.run(alert_service.get_pending_alerts_for_user(user_id))
-
-            if not alerts:
-                logger.warning(f"User {user_id} marked as due but has no pending alerts")
-                continue
-
-            # Extract user name from email
-            user_name = email.split("@")[0] if email else "User"
-
-            # Prepare alerts for email template
-            alert_dicts = [
-                {
-                    "product_name": a["product_name"],
-                    "competitor_name": a["competitor_name"],
-                    "alert_type": a["alert_type"],
-                    "old_price": a["old_price"],
-                    "new_price": a["new_price"],
-                    "price_change_percent": a["price_change_percent"],
-                    "currency": a.get("currency", "USD")
-                }
-                for a in alerts
-            ]
-
-            # Send digest email
-            email_result = email_service.send_price_alert_digest(
-                to_email=email,
-                user_name=user_name,
-                alerts=alert_dicts,
-                digest_period_hours=digest_hours
+            auth_response = client.auth.admin.get_user_by_id(user_id)
+            email = getattr(getattr(auth_response, "user", None), "email", None)
+            results.append(
+                digest_service.run_for_user(
+                    user_id, email, force=force, dry_run=dry_run
+                )
             )
-
-            alert_ids = [a["id"] for a in alerts]
-
-            if email_result["success"]:
-                # Mark alerts as included
-                asyncio.run(alert_service.mark_alerts_as_included(alert_ids))
-
-                # Record in alert history
-                client.table("alert_history").insert({
-                    "user_id": user_id,
-                    "alerts_count": len(alerts),
-                    "email_status": "sent",
-                    "alert_ids": alert_ids
-                }).execute()
-
-                # Update last_digest_sent_at
-                client.table("user_alert_settings").update({
-                    "last_digest_sent_at": datetime.now(timezone.utc).isoformat()
-                }).eq("user_id", user_id).execute()
-
-                sent += 1
-                logger.info(f"Sent digest to {email} with {len(alerts)} alerts")
-            else:
-                # Record failure
-                client.table("alert_history").insert({
-                    "user_id": user_id,
-                    "alerts_count": len(alerts),
-                    "email_status": "failed",
-                    "error_message": email_result.get("error", "Unknown error"),
-                    "alert_ids": alert_ids
-                }).execute()
-
-                failed += 1
-                logger.error(f"Failed to send digest to {email}: {email_result.get('error')}")
-
-        except Exception as e:
-            failed += 1
-            logger.error(f"Error sending digest to user {user_id}: {str(e)}")
-
-    logger.info(f"Alert digest batch complete: {sent} sent, {failed} failed out of {total_users}")
+        except Exception as exc:
+            logger.exception("Digest batch failed for user %s: %s", user_id, exc)
+            results.append({"user_id": user_id, "status": "failed", "alerts_count": 0})
 
     return {
-        "total_users": total_users,
-        "sent": sent,
-        "failed": failed
+        "total_users": len(results),
+        "sent": sum(1 for result in results if result["status"] == "sent"),
+        "failed": sum(1 for result in results if result["status"] == "failed"),
+        "skipped": sum(1 for result in results if result["status"] == "skipped"),
+        "dry_run": sum(1 for result in results if result["status"] == "dry_run"),
+        "alerts_sent": sum(
+            result.get("alerts_count", 0)
+            for result in results
+            if result["status"] == "sent"
+        ),
+        "results": results,
     }
 
 

@@ -228,22 +228,63 @@ class InitialPriceResult(BaseModel):
 # Alert Models
 # ---------------------------------------------------------------------------
 class AlertSettingsResponse(BaseModel):
-    """User's alert settings."""
+    """User notification and digest settings."""
+
     user_id: str
     email_enabled: bool = True
-    digest_frequency: str = "daily"  # 'immediate', 'daily', 'weekly'
-    alert_on_price_drop: bool = True
-    alert_on_price_increase: bool = True
-    alert_threshold_percent: Decimal = Decimal("5.00")
+    digest_frequency_hours: int = 24
+    alert_price_drop: bool = True
+    alert_price_increase: bool = True
+    webhook_enabled: bool = False
+    webhook_url: str | None = None
+    webhook_secret_configured: bool = False
+    last_digest_sent_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class AlertSettingsUpdate(BaseModel):
     """Request to update alert settings."""
+
     email_enabled: bool | None = None
-    digest_frequency: str | None = None
-    alert_on_price_drop: bool | None = None
-    alert_on_price_increase: bool | None = None
-    alert_threshold_percent: Decimal | None = None
+    digest_frequency_hours: int | None = Field(None, ge=1, le=168)
+    alert_price_drop: bool | None = None
+    alert_price_increase: bool | None = None
+    webhook_enabled: bool | None = None
+    webhook_url: str | None = Field(None, max_length=2048)
+    webhook_secret: str | None = Field(None, min_length=16, max_length=255)
+
+    @field_validator("webhook_url")
+    @classmethod
+    def validate_webhook_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if value and not value.startswith("https://"):
+            raise ValueError("Webhook URL must use HTTPS")
+        return value or None
+
+
+class DigestRunRequest(BaseModel):
+    """Options for an on-demand digest run."""
+
+    force: bool = False
+    dry_run: bool = False
+
+
+class DigestRunResponse(BaseModel):
+    """Outcome of a digest run for one user."""
+
+    user_id: str
+    status: str
+    alerts_count: int
+    price_drops: int
+    price_increases: int
+    currency_changes: int
+    email_sent: bool = False
+    webhook_sent: bool = False
+    dry_run: bool = False
+    skipped_reason: str | None = None
 
 
 class PendingAlertResponse(BaseModel):
@@ -269,14 +310,17 @@ class PendingAlertsListResponse(BaseModel):
 
 
 class AlertHistoryResponse(BaseModel):
-    """A sent alert in history."""
+    """A persisted digest delivery attempt."""
+
     id: str
-    product_id: str
-    product_name: str
-    alert_type: str
-    message: str
-    sent_at: datetime
-    email_status: str  # 'sent', 'failed', 'pending'
+    digest_sent_at: datetime
+    alerts_count: int
+    price_drops: int = 0
+    price_increases: int = 0
+    currency_changes: int = 0
+    email_status: str
+    webhook_status: str = "disabled"
+    error_message: str | None = None
 
 
 class AlertHistoryListResponse(BaseModel):
