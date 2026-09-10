@@ -38,11 +38,18 @@ class DigestService:
         settings = self._get_settings(user_id)
         if not settings:
             return self._empty_result(user_id, dry_run, "alert_settings_not_found")
-        if not force and not self._is_due(settings):
+
+        existing_claim = self._get_in_flight_claim(user_id) if not dry_run else None
+        if not force and not existing_claim and not self._is_due(settings):
             return self._empty_result(user_id, dry_run, "frequency_window_not_elapsed")
 
-        digest_id = str(uuid4())
-        alerts = self._load_alerts(user_id, digest_id, dry_run)
+        if existing_claim:
+            digest_id = str(existing_claim["digest_id"])
+            alerts = existing_claim["alerts"]
+        else:
+            digest_id = str(uuid4())
+            alerts = self._load_alerts(user_id, digest_id, dry_run)
+
         if not alerts:
             return self._empty_result(user_id, dry_run, "no_pending_alerts")
 
@@ -60,12 +67,22 @@ class DigestService:
         if dry_run:
             return result
 
+        email_already_sent = False
+        webhook_already_sent = False
+        if existing_claim:
+            history = self._get_digest_history(digest_id)
+            if history:
+                email_already_sent = history.get("email_status") == "sent"
+                webhook_already_sent = history.get("webhook_status") == "sent"
+
         email_enabled = bool(settings.get("email_enabled"))
         webhook_enabled = bool(settings.get("webhook_enabled"))
         errors: list[str] = []
 
         if email_enabled:
-            if not email:
+            if email_already_sent:
+                result["email_sent"] = True
+            elif not email:
                 errors.append("No recipient email is available")
             else:
                 email_result = self.email_service.send_price_alert_digest(
@@ -79,30 +96,43 @@ class DigestService:
                     errors.append(f"Email: {email_result.get('error', 'delivery failed')}")
 
         if webhook_enabled:
-            webhook_url = settings.get("webhook_url")
-            webhook_secret = settings.get("webhook_secret")
-            if not webhook_url or not webhook_secret:
-                errors.append("Webhook: URL and secret must be configured")
+            if webhook_already_sent:
+                result["webhook_sent"] = True
             else:
-                payload = self.build_webhook_payload(digest_id, user_id, alerts, summary)
-                try:
-                    webhook_result = self.webhook_service.send_digest(
-                        webhook_url, webhook_secret, payload
-                    )
-                except WebhookDeliveryError as exc:
-                    webhook_result = {"success": False, "error": str(exc)}
-                result["webhook_sent"] = bool(webhook_result.get("success"))
-                if not result["webhook_sent"]:
-                    errors.append(
-                        f"Webhook: {webhook_result.get('error', 'delivery failed')}"
-                    )
+                webhook_url = settings.get("webhook_url")
+                webhook_secret = settings.get("webhook_secret")
+                if not webhook_url or not webhook_secret:
+                    errors.append("Webhook: URL and secret must be configured")
+                else:
+                    payload = self.build_webhook_payload(digest_id, user_id, alerts, summary)
+                    try:
+                        webhook_result = self.webhook_service.send_digest(
+                            webhook_url, webhook_secret, payload
+                        )
+                    except WebhookDeliveryError as exc:
+                        webhook_result = {"success": False, "error": str(exc)}
+                    result["webhook_sent"] = bool(webhook_result.get("success"))
+                    if not result["webhook_sent"]:
+                        errors.append(
+                            f"Webhook: {webhook_result.get('error', 'delivery failed')}"
+                        )
 
         if not email_enabled and not webhook_enabled:
             errors.append("No notification channel is enabled")
 
         success = not errors
         result["status"] = "sent" if success else "failed"
-        self._finalize(digest_id, user_id, alerts, summary, result, errors, success)
+        self._finalize(
+            digest_id,
+            user_id,
+            alerts,
+            summary,
+            result,
+            errors,
+            success,
+            email_enabled=email_enabled,
+            webhook_enabled=webhook_enabled,
+        )
         return result
 
     @staticmethod
@@ -239,6 +269,41 @@ class DigestService:
             "detected_at": row["detected_at"],
         }
 
+    def _get_in_flight_claim(self, user_id: str) -> dict[str, Any] | None:
+        response = (
+            self.client.table("pending_alerts")
+            .select(
+                "id, alert_type, old_price, new_price, price_change_percent, "
+                "old_currency, new_currency, detected_at, processing_digest_id, "
+                "products(product_name), competitors(retailer_name, url)"
+            )
+            .eq("user_id", user_id)
+            .eq("included_in_digest", False)
+            .not_.is_("processing_digest_id", "null")
+            .order("detected_at")
+            .limit(MAX_ALERTS_PER_DIGEST)
+            .execute()
+        )
+        if not response.data:
+            return None
+        digest_id = response.data[0].get("processing_digest_id")
+        if not digest_id:
+            return None
+        return {
+            "digest_id": digest_id,
+            "alerts": [self._normalize_alert(row) for row in response.data],
+        }
+
+    def _get_digest_history(self, digest_id: str) -> dict[str, Any] | None:
+        response = (
+            self.client.table("alert_history")
+            .select("email_status, webhook_status")
+            .eq("id", digest_id)
+            .limit(1)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
     def _finalize(
         self,
         digest_id: str,
@@ -248,22 +313,28 @@ class DigestService:
         result: dict[str, Any],
         errors: list[str],
         success: bool,
+        email_enabled: bool = True,
+        webhook_enabled: bool = False,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         counts = summary["counts"]
-        self.client.table("alert_history").insert(
+        email_status = (
+            "sent" if result["email_sent"]
+            else ("failed" if email_enabled else "disabled")
+        )
+        webhook_status = (
+            "sent" if result["webhook_sent"]
+            else ("failed" if webhook_enabled else "disabled")
+        )
+        self.client.table("alert_history").upsert(
             {
                 "id": digest_id,
                 "user_id": user_id,
                 "digest_sent_at": now,
                 "alerts_count": len(alerts),
                 **counts,
-                "email_status": "sent" if result["email_sent"] else (
-                    "failed" if errors else "disabled"
-                ),
-                "webhook_status": "sent" if result["webhook_sent"] else (
-                    "failed" if errors else "disabled"
-                ),
+                "email_status": email_status,
+                "webhook_status": webhook_status,
                 "error_message": "; ".join(errors)[:1000] or None,
                 "alert_ids": [alert["id"] for alert in alerts],
             }
@@ -277,9 +348,11 @@ class DigestService:
                 {"last_digest_sent_at": now}
             ).eq("user_id", user_id).execute()
         else:
-            self.client.table("pending_alerts").update(
-                {"processing_digest_id": None}
-            ).eq("processing_digest_id", digest_id).execute()
+            any_channel_succeeded = result["email_sent"] or result["webhook_sent"]
+            if not any_channel_succeeded:
+                self.client.table("pending_alerts").update(
+                    {"processing_digest_id": None}
+                ).eq("processing_digest_id", digest_id).execute()
 
     @staticmethod
     def _empty_result(

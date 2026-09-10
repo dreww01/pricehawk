@@ -23,6 +23,8 @@ class Query:
         self.operations = []
 
     def __getattr__(self, name):
+        if name == "not_":
+            return self
         def method(*args, **kwargs):
             self.operations.append((name, args, kwargs))
             return self
@@ -269,6 +271,260 @@ def test_delivery_failure_releases_claim_without_advancing_frequency(monkeypatch
         if name == "user_alert_settings" and any(op[0] == "update" for op in q.operations)
     ]
     assert settings_updates == []
+
+
+class StatefulDigestClient:
+    def __init__(self, settings, alerts):
+        self.settings = [dict(s) for s in settings]
+        self.pending_alerts = [
+            dict(a, user_id=a.get("user_id", "user-1"), processing_digest_id=None, included_in_digest=False)
+            for a in alerts
+        ]
+        self.alert_history = {}
+        self.rpc_calls = []
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        if name == "claim_pending_alerts":
+            digest_id = params["p_digest_id"]
+            p_user_id = params["p_user_id"]
+            claimed = []
+            for a in self.pending_alerts:
+                if (
+                    a["user_id"] == p_user_id
+                    and a["processing_digest_id"] is None
+                    and not a["included_in_digest"]
+                ):
+                    a["processing_digest_id"] = digest_id
+                    claimed.append(a)
+            return Query(claimed)
+        return Query([])
+
+    def table(self, name):
+        client = self
+
+        class TableQuery:
+            def __init__(self):
+                self.table_name = name
+                self.filters = []
+                self.action = "select"
+                self.payload = None
+
+            def __getattr__(self, attr):
+                if attr == "not_":
+                    return self
+
+                def method(*args, **kwargs):
+                    if attr in ("select", "update", "upsert", "insert"):
+                        self.action = attr
+                        if args:
+                            self.payload = args[0]
+                    self.filters.append((attr, args, kwargs))
+                    return self
+
+                return method
+
+            def execute(self):
+                if self.table_name == "user_alert_settings":
+                    if self.action == "update":
+                        for s in client.settings:
+                            s.update(self.payload)
+                        return SimpleNamespace(data=client.settings)
+                    return SimpleNamespace(data=client.settings)
+
+                elif self.table_name == "alert_history":
+                    if self.action in ("upsert", "insert"):
+                        client.alert_history[self.payload["id"]] = dict(self.payload)
+                        return SimpleNamespace(data=[self.payload])
+                    elif self.action == "select":
+                        digest_id = None
+                        for f, args, _ in self.filters:
+                            if f == "eq" and args[0] == "id":
+                                digest_id = args[1]
+                        if digest_id and digest_id in client.alert_history:
+                            return SimpleNamespace(data=[client.alert_history[digest_id]])
+                        return SimpleNamespace(data=[])
+
+                elif self.table_name == "pending_alerts":
+                    if self.action == "update":
+                        target_digest_id = None
+                        for f, args, _ in self.filters:
+                            if f == "eq" and args[0] == "processing_digest_id":
+                                target_digest_id = args[1]
+                        for a in client.pending_alerts:
+                            if target_digest_id is None or a["processing_digest_id"] == target_digest_id:
+                                a.update(self.payload)
+                        return SimpleNamespace(data=[])
+                    elif self.action == "select":
+                        user_id = None
+                        for f, args, _ in self.filters:
+                            if f == "eq" and args[0] == "user_id":
+                                user_id = args[1]
+                        res = [
+                            a
+                            for a in client.pending_alerts
+                            if (user_id is None or a["user_id"] == user_id)
+                            and not a["included_in_digest"]
+                            and a["processing_digest_id"] is not None
+                        ]
+                        return SimpleNamespace(data=res)
+
+                return SimpleNamespace(data=[])
+
+        return TableQuery()
+
+
+def test_partial_failure_email_success_webhook_failure_does_not_redeliver_email(monkeypatch):
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -20), alert("a2", "price_increase", 10)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.return_value = {"success": True, "error": None}
+    webhook_service = Mock()
+    webhook_service.send_digest.side_effect = [
+        WebhookDeliveryError("endpoint timed out"),
+        {"success": True, "error": None},
+    ]
+
+    service = DigestService(email_service, webhook_service)
+
+    result1 = service.run_for_user("user-1", "owner@example.com")
+    assert result1["status"] == "failed"
+    assert result1["email_sent"] is True
+    assert result1["webhook_sent"] is False
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
+
+    claimed = [a for a in client.pending_alerts if a["processing_digest_id"] is not None]
+    assert len(claimed) == 2
+    assert all(not a["included_in_digest"] for a in claimed)
+    initial_digest_id = claimed[0]["processing_digest_id"]
+    assert client.alert_history[initial_digest_id]["email_status"] == "sent"
+    assert client.alert_history[initial_digest_id]["webhook_status"] == "failed"
+    assert client.settings[0]["last_digest_sent_at"] is None
+
+    result2 = service.run_for_user("user-1", "owner@example.com")
+    assert result2["status"] == "sent"
+    assert result2["email_sent"] is True
+    assert result2["webhook_sent"] is True
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 2
+
+    assert all(a["included_in_digest"] for a in client.pending_alerts)
+    assert all(a["processing_digest_id"] is None for a in client.pending_alerts)
+    assert client.alert_history[initial_digest_id]["email_status"] == "sent"
+    assert client.alert_history[initial_digest_id]["webhook_status"] == "sent"
+    assert client.settings[0]["last_digest_sent_at"] is not None
+
+
+def test_partial_failure_webhook_success_email_failure_does_not_redeliver_webhook(monkeypatch):
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -15)]
+    client = StatefulDigestClient([settings], alerts)
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.side_effect = [
+        {"success": False, "error": "SMTP server unreachable"},
+        {"success": True, "error": None},
+    ]
+    webhook_service = Mock()
+    webhook_service.send_digest.return_value = {"success": True, "error": None}
+
+    service = DigestService(email_service, webhook_service)
+
+    result1 = service.run_for_user("user-1", "owner@example.com")
+    assert result1["status"] == "failed"
+    assert result1["email_sent"] is False
+    assert result1["webhook_sent"] is True
+    assert webhook_service.send_digest.call_count == 1
+    assert email_service.send_price_alert_digest.call_count == 1
+
+    claimed = [a for a in client.pending_alerts if a["processing_digest_id"] is not None]
+    assert len(claimed) == 1
+    initial_digest_id = claimed[0]["processing_digest_id"]
+    assert client.alert_history[initial_digest_id]["email_status"] == "failed"
+    assert client.alert_history[initial_digest_id]["webhook_status"] == "sent"
+
+    result2 = service.run_for_user("user-1", "owner@example.com")
+    assert result2["status"] == "sent"
+    assert result2["email_sent"] is True
+    assert result2["webhook_sent"] is True
+    assert webhook_service.send_digest.call_count == 1
+    assert email_service.send_price_alert_digest.call_count == 2
+
+    assert all(a["included_in_digest"] for a in client.pending_alerts)
+    assert client.alert_history[initial_digest_id]["email_status"] == "sent"
+    assert client.alert_history[initial_digest_id]["webhook_status"] == "sent"
+
+
+def test_repeated_task_execution_does_not_redeliver_successful_channel(monkeypatch):
+    settings = {
+        "user_id": "user-1",
+        "email_enabled": True,
+        "webhook_enabled": True,
+        "webhook_url": "https://hooks.example.test/pricehawk",
+        "webhook_secret": "a-secure-secret-value",
+        "digest_frequency_hours": 12,
+        "last_digest_sent_at": None,
+    }
+    alerts = [alert("a1", "price_drop", -10)]
+    client = StatefulDigestClient([settings], alerts)
+    client.auth = SimpleNamespace(
+        admin=SimpleNamespace(
+            get_user_by_id=lambda uid: SimpleNamespace(
+                user=SimpleNamespace(email="owner@example.com")
+            )
+        )
+    )
+
+    monkeypatch.setattr("app.services.digest_service.get_supabase_client", lambda: client)
+    monkeypatch.setattr("app.tasks.scraper_tasks.get_supabase_client", lambda: client)
+
+    email_service = Mock()
+    email_service.send_price_alert_digest.return_value = {"success": True, "error": None}
+    webhook_service = Mock()
+    webhook_service.send_digest.side_effect = [
+        WebhookDeliveryError("connection reset"),
+        {"success": True, "error": None},
+    ]
+
+    monkeypatch.setattr(
+        "app.tasks.scraper_tasks.DigestService",
+        lambda: DigestService(email_service, webhook_service),
+    )
+
+    from app.tasks.scraper_tasks import send_alert_digests
+
+    batch_result1 = send_alert_digests(force=True)
+    assert batch_result1["sent"] == 0
+    assert batch_result1["failed"] == 1
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 1
+
+    batch_result2 = send_alert_digests(force=True)
+    assert batch_result2["sent"] == 1
+    assert batch_result2["failed"] == 0
+    assert email_service.send_price_alert_digest.call_count == 1
+    assert webhook_service.send_digest.call_count == 2
 
 
 def test_webhook_signature_covers_timestamp_and_exact_json(monkeypatch):
