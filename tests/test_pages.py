@@ -569,3 +569,194 @@ def test_insights_api_cookie_auth(client, valid_token, mock_supabase):
         response = client.get("/api/insights", cookies={"access_token": valid_token})
         assert response.status_code == 200
         assert "insights" in response.json()
+
+
+# ============================================================================
+# Comprehensive Unified Session Handling & Protected Page Redirection Tests
+# ============================================================================
+
+ALL_PROTECTED_PAGES = [
+    "/dashboard",
+    "/tracked",
+    "/tracked/prod-123",
+    "/discover",
+    "/insights",
+    "/alerts/settings",
+    "/account/settings",
+    "/settings",
+]
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_protected_pages_accessible_with_cookie(client, valid_token, page_path):
+    """Test all protected pages seamlessly recognize authentication from cookies."""
+    response = client.get(page_path, cookies={"access_token": valid_token}, follow_redirects=False)
+    if page_path == "/settings":
+        assert response.status_code in (302, 303)
+        assert response.headers["location"] == "/account/settings"
+    else:
+        assert response.status_code == 200
+        assert "text/html" in response.headers.get("content-type", "")
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_protected_pages_accessible_with_bearer_header(client, valid_token, page_path):
+    """Test all protected pages seamlessly recognize authentication from Authorization headers."""
+    response = client.get(page_path, headers={"Authorization": f"Bearer {valid_token}"}, follow_redirects=False)
+    if page_path == "/settings":
+        assert response.status_code in (302, 303)
+        assert response.headers["location"] == "/account/settings"
+    else:
+        assert response.status_code == 200
+        assert "text/html" in response.headers.get("content-type", "")
+        # When accessed via Bearer header without cookie, response sets access_token cookie
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_unauthenticated_page_access_redirects_to_login(client, page_path):
+    """Test unauthenticated page access always yields HTTP 302/303 redirect with next param."""
+    response = client.get(page_path, follow_redirects=False)
+    assert response.status_code in (302, 303)
+    location = response.headers["location"]
+    assert location.startswith("/login?next=")
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [page_path]
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_expired_page_access_redirects_with_notice_and_clears_cookie(client, expired_token, page_path):
+    """Test expired user page access yields HTTP 302/303 redirect with notice and clears cookie."""
+    response = client.get(page_path, cookies={"access_token": expired_token}, follow_redirects=False)
+    assert response.status_code in (302, 303)
+    location = response.headers["location"]
+    assert "notice=session_expired" in location
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [page_path]
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "access_token=" in set_cookie
+
+
+API_ROUTES_RETURNING_401 = [
+    ("GET", "/api/dashboard/stats"),
+    ("GET", "/api/dashboard/activity"),
+    ("GET", "/api/dashboard/products"),
+    ("GET", "/api/insights"),
+    ("GET", "/api/products"),
+    ("GET", "/api/tracked-products"),
+    ("GET", "/api/export/prod-uuid-1234/csv"),
+    ("GET", "/api/alerts/settings"),
+    ("GET", "/api/alerts/pending"),
+    ("GET", "/api/alerts/history"),
+    ("GET", "/api/account/settings"),
+]
+
+
+@pytest.mark.parametrize("method,endpoint", API_ROUTES_RETURNING_401)
+def test_unauthenticated_api_routes_return_401_even_with_html_accept(client, method, endpoint):
+    """Verify API routes continue returning HTTP 401 JSON even when Accept: text/html is sent."""
+    client_method = getattr(client, method.lower())
+    response = client_method(endpoint, headers={"Accept": "text/html,application/xhtml+xml"})
+    assert response.status_code == 401
+    assert "application/json" in response.headers.get("content-type", "")
+    data = response.json()
+    assert "detail" in data
+
+
+def test_login_post_form_data_redirects_to_next_destination(client, valid_token):
+    """Test POST /login with form data sets session cookie and redirects to next destination."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login?next=/alerts/settings",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/alerts/settings"
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+        assert valid_token in set_cookie
+
+
+def test_login_post_json_data_redirects_to_next_destination(client, valid_token):
+    """Test POST /login with JSON payload sets session cookie and redirects to next destination."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "securepassword", "next": "/tracked?sort=asc"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/tracked?sort=asc"
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+
+
+def test_login_post_unsafe_next_falls_back_to_dashboard(client, valid_token):
+    """Test POST /login with unsafe next parameter safely falls back to /dashboard."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login?next=//evil.example/phish",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/dashboard"
+
+
+def test_login_post_invalid_credentials_renders_login_page_with_error(client):
+    """Test POST /login with invalid credentials re-renders login page with error flash."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.side_effect = Exception("Invalid login credentials")
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login?next=/tracked",
+            data={"email": "wrong@example.com", "password": "badpassword"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 200
+        assert "Invalid email or password" in response.text
+        assert 'data-next="/tracked"' in response.text
+
+
+def test_api_auth_login_sets_cookie_header(client, valid_token):
+    """Test POST /api/auth/login sets access_token cookie on the response."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.auth.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["access_token"] == valid_token
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+        assert valid_token in set_cookie
