@@ -86,13 +86,18 @@ def _decode_jwt(token: str, settings: Settings) -> dict:
 
 
 def verify_token(
-    request: Request = None,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     settings: Settings = Depends(get_settings),
 ) -> CurrentUser:
-    """Verify Supabase JWT and extract user info."""
-    token = extract_token(request, credentials)
-    if not token:
+    """Verify Supabase JWT from Bearer token and extract user info."""
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = credentials.credentials.strip()
+    if not token or token.lower() in ("undefined", "null", "none"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authenticated",

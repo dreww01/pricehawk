@@ -2,7 +2,48 @@
 Authentication endpoint tests.
 """
 
+import time
+import jwt
 import pytest
+from app.core.config import get_settings
+
+
+def _create_test_token() -> str:
+    settings = get_settings()
+    now = int(time.time())
+    payload = {
+        "sub": "test-user-1234",
+        "email": "test@example.com",
+        "role": "authenticated",
+        "aud": "authenticated",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    return jwt.encode(payload, settings.sb_jwt_secret, algorithm="HS256")
+
+
+@pytest.mark.parametrize(
+    "method,endpoint,json_payload",
+    [
+        ("post", "/api/scraper/scrape/manual/123", None),
+        ("put", "/api/alerts/settings", {"price_drop_enabled": True}),
+        ("post", "/api/account/change-password", {"current_password": "p1", "new_password": "p2"}),
+        ("post", "/api/stores/discover", {"url": "https://example.com"}),
+        ("get", "/api/auth/me", None),
+    ],
+)
+def test_ambient_cookie_rejected_on_general_api_endpoints(client, method, endpoint, json_payload):
+    """Regression test: mutation and general API routes reject ambient access_token cookie."""
+    token = _create_test_token()
+    client_method = getattr(client, method)
+    kwargs = {"cookies": {"access_token": token}}
+    if json_payload is not None:
+        kwargs["json"] = json_payload
+
+    response = client_method(endpoint, **kwargs)
+    assert response.status_code in (401, 403)
+    assert response.json()["detail"] == "Not authenticated"
+
 
 
 def test_login_missing_fields(client):
