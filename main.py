@@ -29,6 +29,7 @@ from app.api.routes import (
     tracked_products,
 )
 from app.core.config import get_settings
+from app.core.security import get_safe_redirect_url
 from app.core.version import APPLICATION_VERSION
 from app.middleware.rate_limit import (
     limiter,
@@ -161,15 +162,14 @@ def health_check() -> dict:
 async def unauthorized_handler(request: Request, exc: HTTPException):
     """Handle 401 errors by redirecting browser requests to login with return path."""
     if "text/html" in request.headers.get("accept", ""):
-        destination = request.url.path
+        raw_destination = request.url.path
         if request.url.query:
-            destination = f"{request.url.path}?{request.url.query}"
-        if not destination.startswith("/") or destination.startswith("//"):
-            destination = "/dashboard"
+            raw_destination = f"{request.url.path}?{request.url.query}"
+        destination = get_safe_redirect_url(raw_destination, default="/dashboard")
         err_detail = str(getattr(exc, "detail", "")).lower()
         notice = "session_expired" if "expired" in err_detail else "login_required"
         return RedirectResponse(
-            url=f"/login?next={quote(destination, safe='/')}&notice={notice}",
+            url=f"/login?next={quote(destination, safe='/?&=')}&notice={notice}",
             status_code=303,
         )
     return JSONResponse(

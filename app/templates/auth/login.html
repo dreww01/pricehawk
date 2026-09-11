@@ -72,7 +72,7 @@
             <span id="error-text"></span>
         </div>
 
-        <form id="login-form" class="space-y-4">
+        <form id="login-form" class="space-y-4" data-next="{{ next or '' }}">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Email</label>
                 <input
@@ -192,9 +192,9 @@
 
                 if (response.ok) {
                     document.cookie = `access_token=${data.access_token}; path=/; SameSite=Strict`;
-                    const nextUrl = urlParams.get('next');
-                    if (nextUrl && nextUrl.startsWith('/') && !nextUrl.startsWith('//')) {
-                        window.location.href = nextUrl;
+                    const safeNextUrl = form.dataset.next;
+                    if (safeNextUrl) {
+                        window.location.href = safeNextUrl;
                     } else {
                         window.location.href = '/dashboard';
                     }

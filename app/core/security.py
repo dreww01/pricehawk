@@ -1,4 +1,6 @@
 from functools import lru_cache
+import posixpath
+from urllib.parse import unquote, urlsplit
 
 import httpx
 import jwt
@@ -13,6 +15,90 @@ from app.core.config import get_settings, Settings
 
 
 security = HTTPBearer(auto_error=False)
+
+DISALLOWED_REDIRECT_PREFIXES = (
+    "/api",
+    "/static",
+    "/login",
+    "/logout",
+    "/signup",
+    "/forgot-password",
+    "/reset-password",
+)
+
+
+def get_safe_redirect_url(url: str | None, default: str | None = "/dashboard") -> str | None:
+    """
+    Validate and return a safe local return destination.
+
+    Rejects:
+    - Non-string or empty values
+    - Control characters and newlines
+    - Backslashes (unencoded, encoded, or nested)
+    - Scheme-relative and absolute URLs
+    - External domains / authority separators
+    - Sensitive destinations (API, static assets, auth endpoints)
+    """
+    if not url or not isinstance(url, str):
+        return default
+
+    candidate = url.strip()
+    if not candidate:
+        return default
+
+    # Reject control characters
+    if any(ord(c) < 32 or ord(c) == 127 for c in candidate):
+        return default
+
+    # Check for unencoded or encoded backslashes and control characters through unquoting
+    check_str = candidate
+    for _ in range(3):
+        if "\\" in check_str or "%5c" in check_str.lower():
+            return default
+        if any(ord(c) < 32 or ord(c) == 127 for c in check_str):
+            return default
+        next_str = unquote(check_str)
+        if next_str == check_str:
+            break
+        check_str = next_str
+
+    if "\\" in check_str or "%5c" in check_str.lower():
+        return default
+
+    # Must start with a single slash, not double slash or slash-backslash
+    if not candidate.startswith("/") or candidate.startswith("//") or candidate.startswith("/\\"):
+        return default
+    if not check_str.startswith("/") or check_str.startswith("//") or check_str.startswith("/\\"):
+        return default
+
+    try:
+        parsed = urlsplit(candidate)
+        parsed_unquoted = urlsplit(check_str)
+    except Exception:
+        return default
+
+    # Reject schemes (http, https, javascript, data, etc.) and netlocs
+    if parsed.scheme or parsed.netloc:
+        return default
+    if parsed_unquoted.scheme or parsed_unquoted.netloc:
+        return default
+
+    # Validate path
+    path = parsed.path
+    if not path.startswith("/") or path.startswith("//"):
+        return default
+
+    normalized_path = posixpath.normpath(path)
+    path_lower = path.lower()
+    norm_path_lower = normalized_path.lower()
+
+    for prefix in DISALLOWED_REDIRECT_PREFIXES:
+        if path_lower == prefix or path_lower.startswith(prefix + "/") or path_lower.startswith(prefix + "?"):
+            return default
+        if norm_path_lower == prefix or norm_path_lower.startswith(prefix + "/"):
+            return default
+
+    return candidate
 
 
 class CurrentUser(BaseModel):

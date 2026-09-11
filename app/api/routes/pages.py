@@ -19,6 +19,7 @@ from app.core.security import (
     get_current_user,
     extract_token,
     get_unified_user_and_token,
+    get_safe_redirect_url,
 )
 from app.db.database import get_supabase_client
 
@@ -61,15 +62,14 @@ async def require_auth(
         override = request.app.dependency_overrides[get_current_user]
         return override() if callable(override) else override
 
-    destination = request.url.path
+    raw_destination = request.url.path
     if request.url.query:
-        destination = f"{request.url.path}?{request.url.query}"
-    if not destination.startswith("/") or destination.startswith("//"):
-        destination = "/dashboard"
+        raw_destination = f"{request.url.path}?{request.url.query}"
+    destination = get_safe_redirect_url(raw_destination, default="/dashboard")
 
     token = extract_token(request, credentials)
     if not token:
-        redirect_url = f"/login?next={quote(destination, safe='/')}"
+        redirect_url = f"/login?next={quote(destination, safe='/?&=')}"
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": redirect_url},
@@ -82,7 +82,7 @@ async def require_auth(
         err_msg = str(e).lower()
         is_expired = "expired" in err_msg
         notice = "session_expired" if is_expired else "session_expired"
-        redirect_url = f"/login?next={quote(destination, safe='/')}&notice={notice}"
+        redirect_url = f"/login?next={quote(destination, safe='/?&=')}&notice={notice}"
         headers = {
             "Location": redirect_url,
             "Set-Cookie": "access_token=; Max-Age=0; Path=/; SameSite=Strict",
@@ -103,14 +103,15 @@ def template_response(
     flash_messages = []
     notice = request.query_params.get("notice")
     message = request.query_params.get("message")
-    next_url = request.query_params.get("next")
+    raw_next = (context.get("next") if context and "next" in context else request.query_params.get("next"))
+    safe_next = get_safe_redirect_url(raw_next, default=None)
 
     if notice == "session_expired" or request.query_params.get("expired"):
         flash_messages.append({
             "type": "warning",
             "text": "Your session has expired. Please log in again."
         })
-    elif notice == "login_required" or (next_url and not notice and template_name == "auth/login.html"):
+    elif notice == "login_required" or (safe_next and not notice and template_name == "auth/login.html"):
         flash_messages.append({
             "type": "info",
             "text": "Please log in to access this page."
@@ -125,7 +126,7 @@ def template_response(
         "request": request,
         "user": user,
         "flash_messages": flash_messages,
-        "next": next_url,
+        "next": safe_next,
     }
     if context:
         ctx.update(context)
@@ -147,11 +148,10 @@ async def login_page(
 ):
     """Login page."""
     next_url = request.query_params.get("next")
+    safe_next = get_safe_redirect_url(next_url, default=None)
     if user:
-        if next_url and next_url.startswith("/") and not next_url.startswith("//"):
-            return RedirectResponse(url=next_url, status_code=303)
-        return RedirectResponse(url="/dashboard", status_code=303)
-    return template_response(request, "auth/login.html", context={"next": next_url})
+        return RedirectResponse(url=safe_next or "/dashboard", status_code=303)
+    return template_response(request, "auth/login.html", context={"next": safe_next})
 
 
 @router.get("/signup", response_class=HTMLResponse)

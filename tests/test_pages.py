@@ -10,6 +10,7 @@ import jwt
 import pytest
 
 from app.core.config import get_settings
+from app.core.security import get_safe_redirect_url
 
 
 def create_token(
@@ -271,10 +272,111 @@ def test_authenticated_user_redirected_away_from_login(client, valid_token):
 
 
 def test_authenticated_user_redirected_to_next_destination_from_login(client, valid_token):
-    """Test already-authenticated user is redirected to next path if provided."""
+    """Test already-authenticated user is redirected to next path if provided and safe."""
     response = client.get("/login?next=/tracked", cookies={"access_token": valid_token}, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/tracked"
+
+
+@pytest.mark.parametrize(
+    "valid_path",
+    [
+        "/dashboard",
+        "/tracked",
+        "/tracked?filter=active&sort=desc",
+        "/tracked/prod-abc-123",
+        "/insights",
+        "/discover",
+        "/alerts/settings",
+        "/account/settings",
+    ],
+)
+def test_safe_redirect_validator_accepts_valid_local_paths(valid_path):
+    """Confirm validator accepts valid local application paths."""
+    assert get_safe_redirect_url(valid_path) == valid_path
+
+
+@pytest.mark.parametrize(
+    "unsafe_payload",
+    [
+        "/\\evil.example",
+        "/\\",
+        "\\evil.example",
+        "/dashboard\\evil",
+        "/%5cevil.example",
+        "/%5Cevil.example",
+        "/%255cevil.example",
+        "/dashboard%5cevil",
+        "/dashboard%255cevil",
+        "/dashboard\r\nevil",
+        "/dashboard\x00evil",
+        "/dashboard%0d%0a",
+        "http://evil.example",
+        "https://evil.example/path",
+        "//evil.example",
+        "///evil.example",
+        "javascript:alert(1)",
+        "/api/auth/me",
+        "/api/dashboard/stats",
+        "/static/css/style.css",
+        "/login",
+        "/logout",
+        "/signup",
+        "/forgot-password",
+        "/reset-password",
+        "/dashboard/../api/auth/me",
+        "",
+        None,
+    ],
+)
+def test_safe_redirect_validator_rejects_unsafe_destinations(unsafe_payload):
+    """Confirm validator rejects backslashes, schemes, and sensitive destinations."""
+    assert get_safe_redirect_url(unsafe_payload, default="/dashboard") == "/dashboard"
+
+
+@pytest.mark.parametrize(
+    "unsafe_next",
+    [
+        "/\\evil.example",
+        "/%5cevil.example",
+        "/%5Cevil.example",
+        "//evil.example",
+        "https://evil.example",
+        "/api/auth/me",
+        "/logout",
+    ],
+)
+def test_authenticated_user_unsafe_next_redirects_to_dashboard(client, valid_token, unsafe_next):
+    """Test authenticated user with unsafe next parameter is redirected to /dashboard."""
+    response = client.get(f"/login?next={unsafe_next}", cookies={"access_token": valid_token}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/dashboard"
+
+
+@pytest.mark.parametrize(
+    "unsafe_next",
+    [
+        "/\\evil.example",
+        "/%5cevil.example",
+        "/%5Cevil.example",
+        "//evil.example",
+        "https://evil.example",
+    ],
+)
+def test_login_page_renders_safe_data_next_for_client_redirect(client, unsafe_next):
+    """Test login page never embeds unsafe next destinations in form dataset."""
+    response = client.get(f"/login?next={unsafe_next}")
+    assert response.status_code == 200
+    # form data-next should be empty or default, not the unsafe target
+    assert f'data-next="{unsafe_next}"' not in response.text
+    assert 'data-next=""' in response.text
+
+
+def test_login_page_renders_valid_data_next_for_client_redirect(client):
+    """Test login page embeds valid local next destination in form dataset."""
+    response = client.get("/login?next=/tracked?filter=active")
+    assert response.status_code == 200
+    assert 'data-next="/tracked?filter=active"' in response.text
 
 
 def test_logout_clears_cookie(client):
