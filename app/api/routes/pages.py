@@ -42,7 +42,6 @@ async def get_current_user_optional(
         return None
     try:
         user = await verify_token_string(token)
-        user.token = token
         return user
     except Exception:
         return None
@@ -78,7 +77,6 @@ async def require_auth(
 
     try:
         user = await verify_token_string(token)
-        user.token = token
         return user
     except Exception as e:
         err_msg = str(e).lower()

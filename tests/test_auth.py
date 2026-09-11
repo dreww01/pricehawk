@@ -45,6 +45,22 @@ def test_ambient_cookie_rejected_on_general_api_endpoints(client, method, endpoi
     assert response.json()["detail"] == "Not authenticated"
 
 
+def test_me_endpoint_never_serializes_token(client):
+    """Confirm user JSON from /api/auth/me never contains an access token or raw credentials."""
+    token = _create_test_token()
+    response = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == "test-user-1234"
+    assert data["email"] == "test@example.com"
+    assert "token" not in data
+    assert "access_token" not in data
+    assert token not in response.text
+
+
 
 def test_login_missing_fields(client):
     """Test login with missing fields returns 422."""

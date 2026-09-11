@@ -7,6 +7,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jwt import PyJWKClient
 from pydantic import BaseModel
 
+from typing import NamedTuple
+
 from app.core.config import get_settings, Settings
 
 
@@ -17,7 +19,12 @@ class CurrentUser(BaseModel):
     id: str
     email: str | None = None
     role: str | None = None
-    token: str | None = None
+
+
+class AuthContext(NamedTuple):
+    """Internal authentication context containing authenticated user and raw token."""
+    user: CurrentUser
+    token: str
 
 
 @lru_cache
@@ -136,7 +143,6 @@ def verify_token(
         id=user_id,
         email=payload.get("email"),
         role=payload.get("role"),
-        token=token,
     )
 
 
@@ -164,17 +170,16 @@ async def verify_token_string(token: str) -> CurrentUser:
         id=user_id,
         email=payload.get("email"),
         role=payload.get("role"),
-        token=token,
     )
 
 
 async def get_unified_user_and_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> tuple[CurrentUser, str]:
+) -> AuthContext:
     """
     Unified authentication dependency for endpoints accepting either Bearer token or session cookie.
-    Returns (CurrentUser, token).
+    Returns AuthContext(user, token).
     Raises HTTP 401 if unauthenticated or expired.
     """
     if request and hasattr(request, "app"):
@@ -182,12 +187,12 @@ async def get_unified_user_and_token(
             override = request.app.dependency_overrides[get_current_user]
             user = override() if callable(override) else override
             token = getattr(user, "token", None) or extract_token(request, credentials) or "mock-token"
-            return user, token
+            return AuthContext(user=user, token=token)
         if verify_token in request.app.dependency_overrides:
             override = request.app.dependency_overrides[verify_token]
             user = override() if callable(override) else override
             token = getattr(user, "token", None) or extract_token(request, credentials) or "mock-token"
-            return user, token
+            return AuthContext(user=user, token=token)
 
     token = extract_token(request, credentials)
     if not token:
@@ -199,8 +204,7 @@ async def get_unified_user_and_token(
 
     try:
         user = await verify_token_string(token)
-        user.token = token
-        return user, token
+        return AuthContext(user=user, token=token)
     except ValueError as e:
         err_msg = str(e)
         if "expired" in err_msg.lower():
