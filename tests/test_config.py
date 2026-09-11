@@ -60,6 +60,14 @@ def test_is_production_across_supported_environments(env: str, expected: bool) -
     assert settings.is_production is expected
 
 
+def test_jwt_allowed_algorithms_parse_from_environment_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_ALLOWED_ALGORITHMS", "ES256, HS256")
+    settings = build_settings()
+    assert settings.jwt_allowed_algorithms == ["ES256", "HS256"]
+
+
 def test_rejects_unsupported_environment() -> None:
     with pytest.raises(ValidationError):
         build_settings(env="preview")

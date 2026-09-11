@@ -4,6 +4,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,11 +24,13 @@ from app.api.routes import (
     export,
     insights,
     pages,
+    products,
     scraper,
     system,
     tracked_products,
 )
 from app.core.config import get_settings
+from app.core.security import get_safe_redirect_url
 from app.core.version import APPLICATION_VERSION
 from app.middleware.rate_limit import (
     limiter,
@@ -110,6 +113,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(tracked_products.router, prefix="/api")
+app.include_router(products.router, prefix="/api")
 app.include_router(scraper.router, prefix="/api/scraper")
 app.include_router(discovery.router, prefix="/api")
 app.include_router(insights.router, prefix="/api")
@@ -156,6 +160,27 @@ def health_check() -> dict:
     return {"status": "healthy"}
 
 
+@app.exception_handler(401)
+async def unauthorized_handler(request: Request, exc: HTTPException):
+    """Handle 401 errors by redirecting browser requests to login with return path."""
+    if "text/html" in request.headers.get("accept", ""):
+        raw_destination = request.url.path
+        if request.url.query:
+            raw_destination = f"{request.url.path}?{request.url.query}"
+        destination = get_safe_redirect_url(raw_destination, default="/dashboard")
+        err_detail = str(getattr(exc, "detail", "")).lower()
+        notice = "session_expired" if "expired" in err_detail else "login_required"
+        return RedirectResponse(
+            url=f"/login?next={quote(destination)}&notice={notice}",
+            status_code=303,
+        )
+    return JSONResponse(
+        status_code=401,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
+
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc: HTTPException):
     """Handle 404 errors with HTML page for browser requests."""
@@ -184,4 +209,4 @@ async def not_found_handler(request: Request, exc: HTTPException):
             """,
             status_code=404
         )
-    return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return JSONResponse(status_code=404, content={"detail": exc.detail or "Not found"})

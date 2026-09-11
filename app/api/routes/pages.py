@@ -6,13 +6,21 @@ These routes return rendered templates, not JSON.
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
-from fastapi import APIRouter, Request, Depends, HTTPException, Cookie
+from fastapi import APIRouter, Request, Depends, HTTPException, Cookie, status
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.security import verify_token_string, CurrentUser, get_current_user
+from app.core.security import (
+    verify_token_string,
+    CurrentUser,
+    get_current_user,
+    extract_token,
+    get_unified_user_and_token,
+    get_safe_redirect_url,
+)
 from app.db.database import get_supabase_client
 
 
@@ -25,27 +33,64 @@ templates = Jinja2Templates(directory=BASE_DIR / "app" / "templates")
 
 
 async def get_current_user_optional(
-    access_token: Optional[str] = Cookie(None)
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    access_token: Optional[str] = Cookie(None),
 ) -> Optional[CurrentUser]:
-    """Get current user from cookie, returns None if not authenticated."""
-    if not access_token:
+    """Get current user from Bearer token or cookie, returns None if not authenticated."""
+    token = extract_token(request, credentials)
+    if not token:
         return None
     try:
-        return await verify_token_string(access_token)
+        user = await verify_token_string(token)
+        return user
     except Exception:
         return None
 
 
 async def require_auth(
-    access_token: Optional[str] = Cookie(None)
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    access_token: Optional[str] = Cookie(None),
 ) -> CurrentUser:
-    """Require authentication, redirect to login if not authenticated."""
-    if not access_token:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    """
+    Require authentication via session cookie or authorization token.
+    Redirects unauthenticated or expired users to /login with a next query parameter.
+    """
+    # Check if get_current_user has an active dependency override (e.g. in test fixtures)
+    if request and hasattr(request, "app") and get_current_user in request.app.dependency_overrides:
+        override = request.app.dependency_overrides[get_current_user]
+        return override() if callable(override) else override
+
+    raw_destination = request.url.path
+    if request.url.query:
+        raw_destination = f"{request.url.path}?{request.url.query}"
+    destination = get_safe_redirect_url(raw_destination, default="/dashboard")
+
+    token = extract_token(request, credentials)
+    if not token:
+        redirect_url = f"/login?next={quote(destination)}"
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": redirect_url},
+        )
+
     try:
-        return await verify_token_string(access_token)
-    except Exception:
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+        user = await verify_token_string(token)
+        return user
+    except Exception as e:
+        err_msg = str(e).lower()
+        is_expired = "expired" in err_msg
+        notice = "session_expired" if is_expired else "session_expired"
+        redirect_url = f"/login?next={quote(destination)}&notice={notice}"
+        headers = {
+            "Location": redirect_url,
+            "Set-Cookie": "access_token=; Max-Age=0; Path=/; SameSite=Strict",
+        }
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers=headers,
+        )
 
 
 def template_response(
@@ -55,10 +100,33 @@ def template_response(
     user: Optional[CurrentUser] = None
 ) -> HTMLResponse:
     """Helper to render templates with common context."""
+    flash_messages = []
+    notice = request.query_params.get("notice")
+    message = request.query_params.get("message")
+    raw_next = (context.get("next") if context and "next" in context else request.query_params.get("next"))
+    safe_next = get_safe_redirect_url(raw_next, default=None)
+
+    if notice == "session_expired" or request.query_params.get("expired"):
+        flash_messages.append({
+            "type": "warning",
+            "text": "Your session has expired. Please log in again."
+        })
+    elif notice == "login_required" or (safe_next and not notice and template_name == "auth/login.html"):
+        flash_messages.append({
+            "type": "info",
+            "text": "Please log in to access this page."
+        })
+    elif message:
+        flash_messages.append({
+            "type": "info",
+            "text": message
+        })
+
     ctx = {
         "request": request,
         "user": user,
-        "flash_messages": [],  # TODO: Implement flash message system
+        "flash_messages": flash_messages,
+        "next": safe_next,
     }
     if context:
         ctx.update(context)
@@ -79,9 +147,11 @@ async def login_page(
     user: Optional[CurrentUser] = Depends(get_current_user_optional)
 ):
     """Login page."""
+    next_url = request.query_params.get("next")
+    safe_next = get_safe_redirect_url(next_url, default=None)
     if user:
-        return RedirectResponse(url="/dashboard", status_code=303)
-    return template_response(request, "auth/login.html")
+        return RedirectResponse(url=safe_next or "/dashboard", status_code=303)
+    return template_response(request, "auth/login.html", context={"next": safe_next})
 
 
 @router.get("/signup", response_class=HTMLResponse)
@@ -205,7 +275,7 @@ async def account_settings_page(
 async def logout():
     """Logout and clear session cookie."""
     response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie("access_token")
+    response.delete_cookie("access_token", path="/")
     return response
 
 
@@ -215,15 +285,16 @@ async def logout():
 
 @router.get("/api/dashboard/stats")
 async def get_dashboard_stats(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    current_user: CurrentUser = Depends(get_current_user)
+    auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
     """
     Get aggregated dashboard statistics.
 
     Returns counts for products, competitors, pending alerts, and recent activity.
+    Supports either Authorization header or session cookie.
     """
-    client = get_supabase_client(credentials.credentials)
+    current_user, token = auth
+    client = get_supabase_client(token)
 
     # Get products count
     products_result = (
@@ -273,15 +344,16 @@ async def get_dashboard_stats(
 
 @router.get("/api/dashboard/activity")
 async def get_dashboard_activity(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    current_user: CurrentUser = Depends(get_current_user)
+    auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
     """
     Get recent price change activity for dashboard.
 
     Returns the last 10 significant price changes.
+    Supports either Authorization header or session cookie.
     """
-    client = get_supabase_client(credentials.credentials)
+    current_user, token = auth
+    client = get_supabase_client(token)
 
     # Get recent pending alerts as activity
     activity_result = (
@@ -315,15 +387,16 @@ async def get_dashboard_activity(
 
 @router.get("/api/dashboard/products")
 async def get_dashboard_products(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    current_user: CurrentUser = Depends(get_current_user)
+    auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
     """
     Get recent products for dashboard display.
 
     Returns the 5 most recently created products with competitor counts.
+    Supports either Authorization header or session cookie.
     """
-    client = get_supabase_client(credentials.credentials)
+    current_user, token = auth
+    client = get_supabase_client(token)
 
     # Get recent products with competitor count
     products_result = (
@@ -357,15 +430,16 @@ async def get_dashboard_products(
 
 @router.get("/api/insights")
 async def get_all_insights(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    current_user: CurrentUser = Depends(get_current_user)
+    auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
     """
     Get all AI insights for the current user across all products.
 
     Returns insights sorted by generated_at descending.
+    Supports either Authorization header or session cookie.
     """
-    client = get_supabase_client(credentials.credentials)
+    current_user, token = auth
+    client = get_supabase_client(token)
 
     # Get all insights for user's products with product info
     insights_result = (

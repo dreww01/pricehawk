@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.core.security import get_current_user, CurrentUser, verify_token_string
+from app.core.security import (
+    get_current_user,
+    CurrentUser,
+    verify_token_string,
+    get_unified_user_and_token,
+)
 from app.db.database import get_supabase_client
 
 
@@ -70,29 +75,7 @@ async def get_user_from_request(
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
 ) -> tuple[CurrentUser, str]:
     """Get user from Bearer token or cookie. Returns (user, token) tuple."""
-    token = None
-
-    if credentials:
-        token = credentials.credentials
-    else:
-        token = request.cookies.get("access_token")
-
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    try:
-        user = await verify_token_string(token)
-        return user, token
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    return await get_unified_user_and_token(request, credentials)
 
 
 @router.get(
