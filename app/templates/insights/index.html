@@ -63,6 +63,14 @@
         recommendation: { label: 'Recommendation', bgClass: 'bg-green-500/10', textClass: 'text-green-500' }
     };
 
+    function getSafeCurrentDestination(defaultPath = '/insights') {
+        const dest = window.location.pathname + (window.location.search || '');
+        if (!dest || !dest.startsWith('/') || dest.startsWith('//') || dest.startsWith('/\\') || dest.includes('\\') || dest.toLowerCase().includes('%5c')) {
+            return defaultPath;
+        }
+        return dest;
+    }
+
     async function loadInsights() {
         const loadingState = document.getElementById('loading-state');
         const errorState = document.getElementById('error-state');
@@ -74,7 +82,8 @@
             const response = await fetch('/api/insights', { headers });
 
             if (response.status === 401) {
-                window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname) + '&notice=session_expired';
+                const dest = getSafeCurrentDestination('/insights');
+                window.location.href = '/login?next=' + encodeURIComponent(dest) + '&notice=session_expired';
                 return;
             }
 

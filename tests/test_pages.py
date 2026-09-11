@@ -160,6 +160,36 @@ def test_expired_session_redirects_with_notice_and_clears_cookie(client, expired
     assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie
 
 
+def test_expired_session_with_query_params_preserves_full_destination(client, expired_token):
+    """Test expired cookie on protected URL with query parameters preserves full query string in next."""
+    response = client.get(
+        "/tracked?filter=active&sort=desc&page=2",
+        cookies={"access_token": expired_token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "notice=session_expired" in location
+    decoded = unquote(location)
+    assert "next=/tracked?filter=active&sort=desc&page=2" in decoded
+
+
+def test_dashboard_template_contains_query_preserving_auth_error_handler(client, valid_token):
+    """Verify dashboard script preserves query params in client-side 401 redirect."""
+    response = client.get("/dashboard", cookies={"access_token": valid_token})
+    assert response.status_code == 200
+    assert "getSafeCurrentDestination" in response.text
+    assert "window.location.pathname + (window.location.search || '')" in response.text
+
+
+def test_insights_template_contains_query_preserving_auth_error_handler(client, valid_token):
+    """Verify insights script preserves query params in client-side 401 redirect."""
+    response = client.get("/insights", cookies={"access_token": valid_token})
+    assert response.status_code == 200
+    assert "getSafeCurrentDestination" in response.text
+    assert "window.location.pathname + (window.location.search || '')" in response.text
+
+
 def test_invalid_token_redirects_with_notice_and_clears_cookie(client):
     """Test malformed/tampered cookie on protected page redirects and clears cookie."""
     response = client.get(

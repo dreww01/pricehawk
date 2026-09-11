@@ -156,9 +156,18 @@
     const token = getCookie('access_token');
     const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
 
+    function getSafeCurrentDestination(defaultPath = '/dashboard') {
+        const dest = window.location.pathname + (window.location.search || '');
+        if (!dest || !dest.startsWith('/') || dest.startsWith('//') || dest.startsWith('/\\') || dest.includes('\\') || dest.toLowerCase().includes('%5c')) {
+            return defaultPath;
+        }
+        return dest;
+    }
+
     function handleAuthError(response) {
         if (response.status === 401) {
-            window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname) + '&notice=session_expired';
+            const dest = getSafeCurrentDestination('/dashboard');
+            window.location.href = '/login?next=' + encodeURIComponent(dest) + '&notice=session_expired';
             return true;
         }
         return false;
