@@ -2,9 +2,10 @@
 Page route tests and authentication fallback verification.
 """
 
+import html
 import time
 from unittest.mock import MagicMock, patch
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import jwt
 import pytest
@@ -131,14 +132,34 @@ def test_account_settings_requires_auth(client):
     assert response.headers["location"] == "/login?next=/account/settings"
 
 
-def test_destination_query_string_preserved(client):
+def test_destination_query_string_preserved(client, valid_token):
     """Test query string on protected page is preserved in next redirect parameter."""
-    response = client.get("/tracked?filter=active&sort=desc", follow_redirects=False)
+    target = "/tracked?filter=active&sort=desc"
+    response = client.get(target, follow_redirects=False)
     assert response.status_code == 303
     location = response.headers["location"]
     assert location.startswith("/login?next=")
-    decoded_location = unquote(location)
-    assert "next=/tracked?filter=active&sort=desc" in decoded_location
+
+    # Verify next is parsed as a single query parameter value with full path and query string
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [target]
+    assert "sort" not in params
+
+    # Follow redirect to login page and verify full destination is preserved in form data-next
+    login_response = client.get(location)
+    assert login_response.status_code == 200
+    assert f'data-next="{target}"' in html.unescape(login_response.text)
+
+    # Verify following redirect directly also preserves data-next
+    followed_response = client.get(target, follow_redirects=True)
+    assert followed_response.status_code == 200
+    assert f'data-next="{target}"' in html.unescape(followed_response.text)
+
+    # Verify post-login redirect preserves complete destination
+    redirect_response = client.get(location, cookies={"access_token": valid_token}, follow_redirects=False)
+    assert redirect_response.status_code == 303
+    assert redirect_response.headers["location"] == target
 
 
 # ============================================================================
@@ -160,18 +181,64 @@ def test_expired_session_redirects_with_notice_and_clears_cookie(client, expired
     assert "Max-Age=0" in set_cookie or "max-age=0" in set_cookie
 
 
-def test_expired_session_with_query_params_preserves_full_destination(client, expired_token):
+def test_expired_session_with_query_params_preserves_full_destination(client, expired_token, valid_token):
     """Test expired cookie on protected URL with query parameters preserves full query string in next."""
+    target = "/tracked?filter=active&sort=desc&page=2"
     response = client.get(
-        "/tracked?filter=active&sort=desc&page=2",
+        target,
         cookies={"access_token": expired_token},
         follow_redirects=False,
     )
     assert response.status_code == 303
     location = response.headers["location"]
     assert "notice=session_expired" in location
-    decoded = unquote(location)
-    assert "next=/tracked?filter=active&sort=desc&page=2" in decoded
+
+    # Verify next is parsed as a single query parameter value
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [target]
+    assert params["notice"] == ["session_expired"]
+    assert "sort" not in params
+    assert "page" not in params
+
+    # Follow redirect to login page and confirm data-next preserves full path and query parameters
+    login_response = client.get(location)
+    assert login_response.status_code == 200
+    assert f'data-next="{target}"' in html.unescape(login_response.text)
+
+    # Confirm post-login redirect preserves complete destination
+    redirect_response = client.get(location, cookies={"access_token": valid_token}, follow_redirects=False)
+    assert redirect_response.status_code == 303
+    assert redirect_response.headers["location"] == target
+
+
+@pytest.mark.asyncio
+async def test_global_401_handler_preserves_multiple_query_params():
+    """Verify global browser 401 exception handler encodes destination with multiple parameters as single next value."""
+    from starlette.requests import Request
+    from fastapi import HTTPException
+    from main import unauthorized_handler
+
+    target = "/tracked?filter=active&sort=desc&page=2"
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/tracked",
+        "query_string": b"filter=active&sort=desc&page=2",
+        "headers": [(b"accept", b"text/html")],
+    }
+    request = Request(scope)
+    exc = HTTPException(status_code=401, detail="Token expired")
+    response = await unauthorized_handler(request, exc)
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [target]
+    assert params["notice"] == ["session_expired"]
+    assert "sort" not in params
+    assert "page" not in params
 
 
 def test_dashboard_template_contains_query_preserving_auth_error_handler(client, valid_token):

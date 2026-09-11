@@ -69,7 +69,7 @@ async def require_auth(
 
     token = extract_token(request, credentials)
     if not token:
-        redirect_url = f"/login?next={quote(destination, safe='/?&=')}"
+        redirect_url = f"/login?next={quote(destination)}"
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": redirect_url},
@@ -82,7 +82,7 @@ async def require_auth(
         err_msg = str(e).lower()
         is_expired = "expired" in err_msg
         notice = "session_expired" if is_expired else "session_expired"
-        redirect_url = f"/login?next={quote(destination, safe='/?&=')}&notice={notice}"
+        redirect_url = f"/login?next={quote(destination)}&notice={notice}"
         headers = {
             "Location": redirect_url,
             "Set-Cookie": "access_token=; Max-Age=0; Path=/; SameSite=Strict",

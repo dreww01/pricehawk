@@ -171,7 +171,7 @@ async def unauthorized_handler(request: Request, exc: HTTPException):
         err_detail = str(getattr(exc, "detail", "")).lower()
         notice = "session_expired" if "expired" in err_detail else "login_required"
         return RedirectResponse(
-            url=f"/login?next={quote(destination, safe='/?&=')}&notice={notice}",
+            url=f"/login?next={quote(destination)}&notice={notice}",
             status_code=303,
         )
     return JSONResponse(
