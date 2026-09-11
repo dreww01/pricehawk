@@ -154,28 +154,63 @@ def extract_token(
     return None
 
 
+SUPPORTED_JWT_ALGORITHMS = {"ES256", "HS256"}
+
+
 def _decode_jwt(token: str, settings: Settings) -> dict:
-    """Decode and verify JWT token supporting both HS256 secret and ES256 JWKS."""
+    """Decode and verify JWT token using trusted application configuration and explicit paths."""
     try:
         header = jwt.get_unverified_header(token)
     except Exception as e:
         raise jwt.InvalidTokenError(f"Invalid token header: {e}") from e
 
-    alg = header.get("alg", "ES256")
-    unverified = jwt.decode(token, options={"verify_signature": False})
-    decode_kwargs: dict = {"algorithms": [alg]}
-    if "aud" in unverified:
-        decode_kwargs["audience"] = "authenticated"
-    else:
-        decode_kwargs["options"] = {"verify_aud": False}
+    token_alg = header.get("alg")
+    if not token_alg:
+        raise jwt.InvalidTokenError("Missing token algorithm")
 
-    if alg == "HS256":
-        return jwt.decode(token, settings.sb_jwt_secret, **decode_kwargs)
+    # Allowed algorithms must come from trusted application configuration and known supported set
+    configured_allowed = set(getattr(settings, "jwt_allowed_algorithms", ["ES256", "HS256"]))
+    trusted_allowed = configured_allowed & SUPPORTED_JWT_ALGORITHMS
 
-    jwks_url = f"{settings.sb_url}/auth/v1/.well-known/jwks.json"
-    jwks_client = get_jwks_client(jwks_url)
-    signing_key = jwks_client.get_signing_key_from_jwt(token)
-    return jwt.decode(token, signing_key.key, **decode_kwargs)
+    if token_alg not in trusted_allowed:
+        raise jwt.InvalidTokenError(f"Unsupported algorithm: {token_alg}")
+
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+    except Exception as e:
+        raise jwt.InvalidTokenError(f"Invalid token payload: {e}") from e
+
+    decode_options = {}
+    if "aud" not in unverified:
+        decode_options["verify_aud"] = False
+
+    audience = "authenticated" if "aud" in unverified else None
+
+    # Explicit, separately configured verification paths
+    if token_alg == "HS256":
+        if not settings.sb_jwt_secret:
+            raise jwt.InvalidTokenError("HS256 secret not configured")
+        return jwt.decode(
+            token,
+            settings.sb_jwt_secret,
+            algorithms=["HS256"],
+            audience=audience,
+            options=decode_options,
+        )
+
+    if token_alg == "ES256":
+        jwks_url = f"{settings.sb_url}/auth/v1/.well-known/jwks.json"
+        jwks_client = get_jwks_client(jwks_url)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256"],
+            audience=audience,
+            options=decode_options,
+        )
+
+    raise jwt.InvalidTokenError(f"Unsupported algorithm: {token_alg}")
 
 
 def verify_token(

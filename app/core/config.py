@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, NoDecode
 
 
 DEFAULT_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:8000"]
+DEFAULT_JWT_ALLOWED_ALGORITHMS = ["ES256", "HS256"]
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: DEFAULT_CORS_ORIGINS.copy()
     )
+    jwt_allowed_algorithms: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: DEFAULT_JWT_ALLOWED_ALGORITHMS.copy()
+    )
     default_rate_limit: str = "60/minute"
 
     @field_validator("env", mode="before")
@@ -33,6 +37,13 @@ class Settings(BaseSettings):
     def parse_cors_origins(cls, value: object) -> object:
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("jwt_allowed_algorithms", mode="before")
+    @classmethod
+    def parse_jwt_allowed_algorithms(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [alg.strip() for alg in value.split(",") if alg.strip()]
         return value
 
     @property

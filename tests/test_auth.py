@@ -2,10 +2,20 @@
 Authentication endpoint tests.
 """
 
+import base64
+import json
+from unittest.mock import patch
 import time
 import jwt
 import pytest
 from app.core.config import get_settings
+from app.core.security import _decode_jwt
+
+
+def _craft_token_with_header(header: dict, payload: dict) -> str:
+    h = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+    p = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return f"{h}.{p}.invalidsignature"
 
 
 def _create_test_token() -> str:
@@ -59,6 +69,52 @@ def test_me_endpoint_never_serializes_token(client):
     assert "token" not in data
     assert "access_token" not in data
     assert token not in response.text
+
+
+@pytest.mark.parametrize(
+    "unsupported_alg",
+    ["none", "RS256", "HS384", "HS512", "ES384", "ES512"],
+)
+def test_unsupported_jwt_algorithms_rejected(unsupported_alg):
+    """Unit test: tokens declaring unallowed or unsupported algorithms are rejected before key lookup."""
+    settings = get_settings()
+    now = int(time.time())
+    payload = {"sub": "user-123", "email": "u@example.com", "iat": now, "exp": now + 3600}
+    token = _craft_token_with_header({"alg": unsupported_alg, "typ": "JWT"}, payload)
+
+    with patch("app.core.security.get_jwks_client") as mock_jwks:
+        with pytest.raises(jwt.InvalidTokenError, match="Unsupported algorithm"):
+            _decode_jwt(token, settings)
+        # Verify no JWKS network lookup occurred
+        mock_jwks.assert_not_called()
+
+
+def test_jwt_algorithm_not_in_configuration_rejected():
+    """Unit test: HS256 token is rejected if configuration excludes HS256."""
+    settings = get_settings()
+    now = int(time.time())
+    payload = {"sub": "user-123", "email": "u@example.com", "iat": now, "exp": now + 3600}
+    token = jwt.encode(payload, settings.sb_jwt_secret, algorithm="HS256")
+
+    # Override settings with ES256-only allowed
+    custom_settings = settings.model_copy(update={"jwt_allowed_algorithms": ["ES256"]})
+    with patch("app.core.security.get_jwks_client") as mock_jwks:
+        with pytest.raises(jwt.InvalidTokenError, match="Unsupported algorithm"):
+            _decode_jwt(token, custom_settings)
+        mock_jwks.assert_not_called()
+
+
+def test_api_rejects_unsupported_algorithm_token(client):
+    """Integration test: API endpoint returns 401 when token has unsupported algorithm."""
+    now = int(time.time())
+    payload = {"sub": "user-123", "email": "u@example.com", "iat": now, "exp": now + 3600}
+    token = _craft_token_with_header({"alg": "RS256", "typ": "JWT"}, payload)
+    response = client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 401
+    assert "invalid" in response.json()["detail"].lower()
 
 
 
