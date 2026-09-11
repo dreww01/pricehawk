@@ -88,7 +88,7 @@ class TestExportCSV:
         assert ".csv" in response.headers["content-disposition"]
 
         content = response.text
-        assert "Date,Competitor,Price,Currency,Status,Error" in content
+        assert "Date,Time,Competitor,Price,Currency,Status,Error" in content
         assert "Example Store" in content
 
     def test_export_csv_product_not_found(self, mock_auth, mock_db_not_found):

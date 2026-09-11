@@ -24,6 +24,7 @@ from app.api.routes import (
     export,
     insights,
     pages,
+    products,
     scraper,
     system,
     tracked_products,
@@ -112,6 +113,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(tracked_products.router, prefix="/api")
+app.include_router(products.router, prefix="/api")
 app.include_router(scraper.router, prefix="/api/scraper")
 app.include_router(discovery.router, prefix="/api")
 app.include_router(insights.router, prefix="/api")
@@ -207,4 +209,4 @@ async def not_found_handler(request: Request, exc: HTTPException):
             """,
             status_code=404
         )
-    return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return JSONResponse(status_code=404, content={"detail": exc.detail or "Not found"})

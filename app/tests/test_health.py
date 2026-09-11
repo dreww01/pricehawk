@@ -14,11 +14,11 @@ def test_health_check():
     assert response.json() == {"status": "healthy"}
 
 
-def test_root_redirects_to_docs():
-    """Root endpoint redirects to API docs."""
+def test_root_redirects_to_dashboard():
+    """Root endpoint redirects to dashboard."""
     response = client.get("/", follow_redirects=False)
     assert response.status_code == 307
-    assert response.headers["location"] == "/api/docs"
+    assert response.headers["location"] == "/dashboard"
 
 
 def test_docs_available():
@@ -40,4 +40,4 @@ def test_openapi_schema():
     assert response.status_code == 200
     schema = response.json()
     assert schema["info"]["title"] == "PriceHawk API"
-    assert schema["info"]["version"] == "1.0.0"
+    assert schema["info"]["version"] == "0.1.0"
