@@ -893,3 +893,156 @@ def test_login_post_rate_limit_exceeded(client, valid_token):
     data = resp6.json()
     assert "Too many requests" in data["detail"]
 
+
+@pytest.fixture
+def production_env(monkeypatch):
+    """Temporarily configure application in production mode."""
+    monkeypatch.setenv("ENV", "production")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_production_cookie_policy_across_operations(production_env, client, valid_token, expired_token):
+    """
+    Verify production session-cookie policy restricts cookies to HTTPS across:
+    1. API login (/api/auth/login)
+    2. Web login (POST /login form and json)
+    3. Bearer-to-cookie conversion (GET protected page with bearer)
+    4. Expiration cleanup (GET protected page with expired cookie)
+    5. Logout (GET /logout)
+    """
+    # 1. API Login in production
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com"),
+    )
+    with patch("app.api.routes.auth.get_supabase_client", return_value=mock_sb):
+        resp_api = client.post(
+            "/api/auth/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+        )
+        assert resp_api.status_code == 200
+        cookie_api = resp_api.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_api
+        assert "secure" in cookie_api.lower()
+        assert "samesite=strict" in cookie_api.lower()
+        assert "path=/" in cookie_api.lower()
+
+    # 2. Web Login in production (form and json)
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        resp_web_form = client.post(
+            "/login",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp_web_form.status_code == 303
+        cookie_web_form = resp_web_form.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_web_form
+        assert "secure" in cookie_web_form.lower()
+        assert "samesite=strict" in cookie_web_form.lower()
+        assert "path=/" in cookie_web_form.lower()
+
+        resp_web_json = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp_web_json.status_code == 303
+        cookie_web_json = resp_web_json.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_web_json
+        assert "secure" in cookie_web_json.lower()
+        assert "samesite=strict" in cookie_web_json.lower()
+        assert "path=/" in cookie_web_json.lower()
+
+    # 3. Bearer-to-cookie conversion in production
+    resp_bearer = client.get(
+        "/dashboard",
+        headers={"Authorization": f"Bearer {valid_token}"},
+        follow_redirects=False,
+    )
+    assert resp_bearer.status_code == 200
+    cookie_bearer = resp_bearer.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_bearer
+    assert "secure" in cookie_bearer.lower()
+    assert "samesite=strict" in cookie_bearer.lower()
+    assert "path=/" in cookie_bearer.lower()
+
+    # 4. Expiration cleanup in production
+    resp_expired = client.get(
+        "/dashboard",
+        cookies={"access_token": expired_token},
+        follow_redirects=False,
+    )
+    assert resp_expired.status_code == 303
+    cookie_expired = resp_expired.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_expired
+    assert "max-age=0" in cookie_expired.lower()
+    assert "secure" in cookie_expired.lower()
+    assert "samesite=strict" in cookie_expired.lower()
+    assert "path=/" in cookie_expired.lower()
+
+    # 5. Logout in production
+    resp_logout = client.get("/logout", follow_redirects=False)
+    assert resp_logout.status_code == 303
+    cookie_logout = resp_logout.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_logout
+    assert "max-age=0" in cookie_logout.lower()
+    assert "secure" in cookie_logout.lower()
+    assert "samesite=strict" in cookie_logout.lower()
+    assert "path=/" in cookie_logout.lower()
+
+
+def test_development_cookie_policy_permits_http(client, valid_token, expired_token):
+    """
+    Verify development/test session-cookie policy does NOT mandate Secure flag,
+    allowing local HTTP development and automated testing.
+    """
+    # 1. API Login in dev
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com"),
+    )
+    with patch("app.api.routes.auth.get_supabase_client", return_value=mock_sb):
+        resp_api = client.post(
+            "/api/auth/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+        )
+        assert resp_api.status_code == 200
+        cookie_api = resp_api.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_api
+        assert "secure" not in cookie_api.lower()
+
+    # 2. Web Login in dev
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        resp_web = client.post(
+            "/login",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp_web.status_code == 303
+        cookie_web = resp_web.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_web
+        assert "secure" not in cookie_web.lower()
+
+    # 3. Expiration cleanup in dev
+    resp_expired = client.get(
+        "/dashboard",
+        cookies={"access_token": expired_token},
+        follow_redirects=False,
+    )
+    assert resp_expired.status_code == 303
+    cookie_expired = resp_expired.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_expired
+    assert "secure" not in cookie_expired.lower()
+
+    # 4. Logout in dev
+    resp_logout = client.get("/logout", follow_redirects=False)
+    assert resp_logout.status_code == 303
+    cookie_logout = resp_logout.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_logout
+    assert "secure" not in cookie_logout.lower()
+
+

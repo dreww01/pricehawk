@@ -207,7 +207,7 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    document.cookie = `access_token=${data.access_token}; path=/; SameSite=Strict`;
+                    document.cookie = `access_token=${data.access_token}; path=/; SameSite=Strict${window.location.protocol === 'https:' ? '; Secure' : ''}`;
                     const rawNext = form.dataset.next || urlParams.get('next');
                     const target = getSafeRedirectDestination(rawNext, '/dashboard');
                     window.location.href = target;

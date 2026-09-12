@@ -8,6 +8,7 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jwt import PyJWKClient
 from pydantic import BaseModel
+from starlette.responses import Response
 
 from typing import NamedTuple
 
@@ -346,3 +347,65 @@ async def get_unified_user(
 ) -> CurrentUser:
     """Dependency returning CurrentUser from unified authentication."""
     return auth_data[0]
+
+
+SESSION_COOKIE_NAME = "access_token"
+
+
+def get_session_cookie_options(settings: Settings | None = None) -> dict:
+    """
+    Return standard cookie attributes for the access_token session cookie.
+    Restricts cookie to HTTPS in production; permits HTTP in development and tests.
+    Attributes are consistent across all set and delete operations.
+    """
+    cfg = settings or get_settings()
+    return {
+        "key": SESSION_COOKIE_NAME,
+        "path": "/",
+        "samesite": "strict",
+        "secure": cfg.is_production,
+        "httponly": False,
+    }
+
+
+def set_access_token_cookie(
+    response: Response,
+    token: str,
+    settings: Settings | None = None,
+    max_age: int | None = None,
+) -> None:
+    """Set the session access_token cookie using the unified environment-aware policy."""
+    opts = get_session_cookie_options(settings)
+    response.set_cookie(
+        key=opts["key"],
+        value=token,
+        path=opts["path"],
+        samesite=opts["samesite"],
+        secure=opts["secure"],
+        httponly=opts["httponly"],
+        max_age=max_age,
+    )
+
+
+def delete_access_token_cookie(
+    response: Response,
+    settings: Settings | None = None,
+) -> None:
+    """Delete the session access_token cookie using the unified environment-aware policy."""
+    opts = get_session_cookie_options(settings)
+    response.delete_cookie(
+        key=opts["key"],
+        path=opts["path"],
+        samesite=opts["samesite"],
+        secure=opts["secure"],
+        httponly=opts["httponly"],
+    )
+
+
+def get_delete_cookie_header(settings: Settings | None = None) -> str:
+    """Return the Set-Cookie header string for deleting the session access_token cookie."""
+    dummy = Response()
+    delete_access_token_cookie(dummy, settings)
+    return dummy.headers.get("set-cookie", "")
+
+

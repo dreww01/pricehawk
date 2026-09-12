@@ -30,7 +30,7 @@ from app.api.routes import (
     tracked_products,
 )
 from app.core.config import get_settings
-from app.core.security import get_safe_redirect_url
+from app.core.security import get_safe_redirect_url, delete_access_token_cookie
 from app.core.version import APPLICATION_VERSION
 from app.middleware.rate_limit import (
     limiter,
@@ -187,7 +187,7 @@ async def unauthorized_handler(request: Request, exc: HTTPException):
         status_code=303,
     )
     if is_expired:
-        response.delete_cookie("access_token", path="/")
+        delete_access_token_cookie(response)
     return response
 
 

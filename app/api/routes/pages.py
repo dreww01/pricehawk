@@ -21,6 +21,9 @@ from app.core.security import (
     extract_token,
     get_unified_user_and_token,
     get_safe_redirect_url,
+    set_access_token_cookie,
+    delete_access_token_cookie,
+    get_delete_cookie_header,
 )
 from app.db.database import get_supabase_client
 from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
@@ -90,7 +93,7 @@ async def require_auth(
         redirect_url = f"/login?next={quote(destination)}&notice={notice}"
         headers = {
             "Location": redirect_url,
-            "Set-Cookie": "access_token=; Max-Age=0; Path=/; SameSite=Strict",
+            "Set-Cookie": get_delete_cookie_header(),
         }
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER,
@@ -142,12 +145,7 @@ def template_response(
     )
     auth_token = getattr(getattr(request, "state", None), "auth_token", None)
     if auth_token and not request.cookies.get("access_token"):
-        response.set_cookie(
-            key="access_token",
-            value=auth_token,
-            path="/",
-            samesite="strict",
-        )
+        set_access_token_cookie(response, auth_token)
     return response
 
 
@@ -227,12 +225,7 @@ async def login_post(
 
         target = safe_next or "/dashboard"
         response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
-        response.set_cookie(
-            key="access_token",
-            value=auth_resp.session.access_token,
-            path="/",
-            samesite="strict",
-        )
+        set_access_token_cookie(response, auth_resp.session.access_token)
         return response
 
     except Exception as e:
@@ -375,7 +368,7 @@ async def settings_page(
 async def logout():
     """Logout and clear session cookie."""
     response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie("access_token", path="/")
+    delete_access_token_cookie(response)
     return response
 
 
