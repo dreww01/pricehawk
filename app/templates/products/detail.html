@@ -399,6 +399,7 @@
         await Promise.all(competitors.map(async (comp) => {
             try {
                 const response = await fetch(`/api/scraper/prices/latest/${comp.id}`, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+                if (handleAuthError(response)) return;
                 const priceCell = document.getElementById(`price-${comp.id}`);
                 if (!priceCell) return;
 
@@ -441,6 +442,7 @@
                 headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ product_name: productName, is_active: isActive })
             });
+            if (handleAuthError(response)) return;
             if (response.ok) { closeEditModal(); loadProduct(); } else { alert('Failed to update product'); }
         } catch { alert('Failed to update product'); }
     });
@@ -463,6 +465,7 @@
                 method: 'POST', headers: { 'Authorization': `Bearer ${accessToken}` }
             });
 
+            if (handleAuthError(response)) return;
             if (!response.ok) throw new Error('Failed to start scrape');
             const { task_id } = await response.json();
 
@@ -502,8 +505,14 @@
                 }
             };
 
-            scrapeEventSource.onerror = () => {
+            scrapeEventSource.onerror = async () => {
                 if (scrapeEventSource) { scrapeEventSource.close(); scrapeEventSource = null; }
+                try {
+                    const probe = await fetch(`/api/tracked-products/${productId}`, {
+                        headers: { 'Authorization': `Bearer ${accessToken}` }
+                    });
+                    if (handleAuthError(probe)) return;
+                } catch {}
                 btn.disabled = false; btnText.textContent = 'Get Current Prices';
             };
         } catch (error) {

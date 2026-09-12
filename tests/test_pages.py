@@ -266,6 +266,55 @@ def test_insights_template_contains_query_preserving_auth_error_handler(client, 
     assert "window.location.pathname + (window.location.search || '')" in response.text
 
 
+def test_product_detail_template_contains_query_preserving_auth_error_handler(client, valid_token):
+    """Verify product detail script preserves query params in client-side 401 redirect and handles all requests."""
+    response = client.get("/tracked/prod-abc-123", cookies={"access_token": valid_token})
+    assert response.status_code == 200
+    assert "getSafeCurrentDestination" in response.text
+    assert "window.location.pathname + (window.location.search || '')" in response.text
+    assert "handleAuthError" in response.text
+    html_text = response.text
+    assert "handleAuthError(response)" in html_text
+    assert "handleAuthError(probe)" in html_text
+
+
+@pytest.mark.parametrize(
+    "method,endpoint,kwargs",
+    [
+        ("GET", "/api/tracked-products/prod-abc-123", {}),
+        ("GET", "/api/charts/prod-abc-123?days=30", {}),
+        ("GET", "/api/scraper/prices/latest/comp-1", {}),
+        ("PUT", "/api/tracked-products/prod-abc-123", {"json": {"product_name": "New Name"}}),
+        ("POST", "/api/scraper/scrape/manual/prod-abc-123", {}),
+    ],
+)
+def test_product_detail_authenticated_endpoints_return_401_on_expired_session(
+    client, expired_token, method, endpoint, kwargs
+):
+    """
+    Verify every authenticated endpoint called by the product detail page returns 401
+    when the session token has expired, ensuring handleAuthError triggers the client-side redirect.
+    """
+    client_method = getattr(client, method.lower())
+    response = client_method(endpoint, headers={"Authorization": f"Bearer {expired_token}"}, **kwargs)
+    assert response.status_code == 401
+    data = response.json()
+    assert "detail" in data
+    assert "expired" in data["detail"].lower()
+
+
+def test_product_detail_expired_session_with_query_params_preserves_full_destination(client, expired_token):
+    """Verify navigating to product detail with query params preserves the full destination on expiry redirect."""
+    target = "/tracked/prod-abc-123?tab=history&filter=active"
+    response = client.get(target, cookies={"access_token": expired_token}, follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [target]
+    assert params["notice"] == ["session_expired"]
+
+
 def test_invalid_token_redirects_with_notice_and_clears_cookie(client):
     """Test malformed/tampered cookie on protected page redirects and clears cookie."""
     response = client.get(
