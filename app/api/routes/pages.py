@@ -23,6 +23,7 @@ from app.core.security import (
     get_safe_redirect_url,
 )
 from app.db.database import get_supabase_client
+from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
 
 
 router = APIRouter(tags=["pages"])
@@ -168,6 +169,7 @@ async def login_page(
 
 
 @router.post("/login")
+@limiter.limit(AUTH_RATE_LIMIT)
 async def login_post(
     request: Request,
 ):

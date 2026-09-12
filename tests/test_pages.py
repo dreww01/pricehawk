@@ -12,6 +12,15 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.security import get_safe_redirect_url
+from app.middleware.rate_limit import limiter
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Ensure in-memory rate limiter storage is reset between tests."""
+    limiter._storage.reset()
+    yield
+    limiter._storage.reset()
 
 
 def create_token(
@@ -760,3 +769,78 @@ def test_api_auth_login_sets_cookie_header(client, valid_token):
         set_cookie = response.headers.get("set-cookie", "")
         assert "access_token=" in set_cookie
         assert valid_token in set_cookie
+
+
+def test_login_post_rate_limit_exceeded(client, valid_token):
+    """
+    Test POST /login enforces authentication rate limit (5 attempts/minute).
+    Confirm that successful and failed form and JSON attempts all count toward
+    the quota, and subsequent attempts receive HTTP 429.
+    """
+    mock_sb_success = MagicMock()
+    mock_sb_success.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com"),
+    )
+    mock_sb_fail = MagicMock()
+    mock_sb_fail.auth.sign_in_with_password.side_effect = Exception("Invalid login credentials")
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_success):
+        # Attempt 1: Successful form login -> 303 redirect
+        resp1 = client.post(
+            "/login?next=/dashboard",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp1.status_code == 303
+        assert resp1.headers["location"] == "/dashboard"
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_fail):
+        # Attempt 2: Failed form login -> 200 re-render with error
+        resp2 = client.post(
+            "/login?next=/dashboard",
+            data={"email": "user@example.com", "password": "wrongpassword"},
+            follow_redirects=False,
+        )
+        assert resp2.status_code == 200
+        assert "Invalid email or password" in resp2.text
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_success):
+        # Attempt 3: Successful JSON login -> 303 redirect
+        resp3 = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "securepassword", "next": "/tracked"},
+            follow_redirects=False,
+        )
+        assert resp3.status_code == 303
+        assert resp3.headers["location"] == "/tracked"
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_fail):
+        # Attempt 4: Failed JSON login -> 200 re-render with error
+        resp4 = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "wrongpassword"},
+            follow_redirects=False,
+        )
+        assert resp4.status_code == 200
+        assert "Invalid email or password" in resp4.text
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_success):
+        # Attempt 5: 5th attempt within quota -> 303 redirect
+        resp5 = client.post(
+            "/login",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp5.status_code == 303
+
+    # Attempt 6: Exceeds rate limit (5/minute) -> 429 Too Many Requests
+    resp6 = client.post(
+        "/login",
+        data={"email": "user@example.com", "password": "securepassword"},
+        follow_redirects=False,
+    )
+    assert resp6.status_code == 429
+    data = resp6.json()
+    assert "Too many requests" in data["detail"]
+
