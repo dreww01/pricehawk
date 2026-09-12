@@ -12,6 +12,15 @@ import pytest
 
 from app.core.config import get_settings
 from app.core.security import get_safe_redirect_url
+from app.middleware.rate_limit import limiter
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Ensure in-memory rate limiter storage is reset between tests."""
+    limiter._storage.reset()
+    yield
+    limiter._storage.reset()
 
 
 def create_token(
@@ -255,6 +264,55 @@ def test_insights_template_contains_query_preserving_auth_error_handler(client, 
     assert response.status_code == 200
     assert "getSafeCurrentDestination" in response.text
     assert "window.location.pathname + (window.location.search || '')" in response.text
+
+
+def test_product_detail_template_contains_query_preserving_auth_error_handler(client, valid_token):
+    """Verify product detail script preserves query params in client-side 401 redirect and handles all requests."""
+    response = client.get("/tracked/prod-abc-123", cookies={"access_token": valid_token})
+    assert response.status_code == 200
+    assert "getSafeCurrentDestination" in response.text
+    assert "window.location.pathname + (window.location.search || '')" in response.text
+    assert "handleAuthError" in response.text
+    html_text = response.text
+    assert "handleAuthError(response)" in html_text
+    assert "handleAuthError(probe)" in html_text
+
+
+@pytest.mark.parametrize(
+    "method,endpoint,kwargs",
+    [
+        ("GET", "/api/tracked-products/prod-abc-123", {}),
+        ("GET", "/api/charts/prod-abc-123?days=30", {}),
+        ("GET", "/api/scraper/prices/latest/comp-1", {}),
+        ("PUT", "/api/tracked-products/prod-abc-123", {"json": {"product_name": "New Name"}}),
+        ("POST", "/api/scraper/scrape/manual/prod-abc-123", {}),
+    ],
+)
+def test_product_detail_authenticated_endpoints_return_401_on_expired_session(
+    client, expired_token, method, endpoint, kwargs
+):
+    """
+    Verify every authenticated endpoint called by the product detail page returns 401
+    when the session token has expired, ensuring handleAuthError triggers the client-side redirect.
+    """
+    client_method = getattr(client, method.lower())
+    response = client_method(endpoint, headers={"Authorization": f"Bearer {expired_token}"}, **kwargs)
+    assert response.status_code == 401
+    data = response.json()
+    assert "detail" in data
+    assert "expired" in data["detail"].lower()
+
+
+def test_product_detail_expired_session_with_query_params_preserves_full_destination(client, expired_token):
+    """Verify navigating to product detail with query params preserves the full destination on expiry redirect."""
+    target = "/tracked/prod-abc-123?tab=history&filter=active"
+    response = client.get(target, cookies={"access_token": expired_token}, follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers["location"]
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [target]
+    assert params["notice"] == ["session_expired"]
 
 
 def test_invalid_token_redirects_with_notice_and_clears_cookie(client):
@@ -569,3 +627,422 @@ def test_insights_api_cookie_auth(client, valid_token, mock_supabase):
         response = client.get("/api/insights", cookies={"access_token": valid_token})
         assert response.status_code == 200
         assert "insights" in response.json()
+
+
+# ============================================================================
+# Comprehensive Unified Session Handling & Protected Page Redirection Tests
+# ============================================================================
+
+ALL_PROTECTED_PAGES = [
+    "/dashboard",
+    "/tracked",
+    "/tracked/prod-123",
+    "/discover",
+    "/insights",
+    "/alerts/settings",
+    "/account/settings",
+    "/settings",
+]
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_protected_pages_accessible_with_cookie(client, valid_token, page_path):
+    """Test all protected pages seamlessly recognize authentication from cookies."""
+    response = client.get(page_path, cookies={"access_token": valid_token}, follow_redirects=False)
+    if page_path == "/settings":
+        assert response.status_code in (302, 303)
+        assert response.headers["location"] == "/account/settings"
+    else:
+        assert response.status_code == 200
+        assert "text/html" in response.headers.get("content-type", "")
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_protected_pages_accessible_with_bearer_header(client, valid_token, page_path):
+    """Test all protected pages seamlessly recognize authentication from Authorization headers."""
+    response = client.get(page_path, headers={"Authorization": f"Bearer {valid_token}"}, follow_redirects=False)
+    if page_path == "/settings":
+        assert response.status_code in (302, 303)
+        assert response.headers["location"] == "/account/settings"
+    else:
+        assert response.status_code == 200
+        assert "text/html" in response.headers.get("content-type", "")
+        # When accessed via Bearer header without cookie, response sets access_token cookie
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_unauthenticated_page_access_redirects_to_login(client, page_path):
+    """Test unauthenticated page access always yields HTTP 302/303 redirect with next param."""
+    response = client.get(page_path, follow_redirects=False)
+    assert response.status_code in (302, 303)
+    location = response.headers["location"]
+    assert location.startswith("/login?next=")
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [page_path]
+
+
+@pytest.mark.parametrize("page_path", ALL_PROTECTED_PAGES)
+def test_expired_page_access_redirects_with_notice_and_clears_cookie(client, expired_token, page_path):
+    """Test expired user page access yields HTTP 302/303 redirect with notice and clears cookie."""
+    response = client.get(page_path, cookies={"access_token": expired_token}, follow_redirects=False)
+    assert response.status_code in (302, 303)
+    location = response.headers["location"]
+    assert "notice=session_expired" in location
+    parsed = urlsplit(location)
+    params = parse_qs(parsed.query)
+    assert params["next"] == [page_path]
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "access_token=" in set_cookie
+
+
+API_ROUTES_RETURNING_401 = [
+    ("GET", "/api/dashboard/stats"),
+    ("GET", "/api/dashboard/activity"),
+    ("GET", "/api/dashboard/products"),
+    ("GET", "/api/insights"),
+    ("GET", "/api/products"),
+    ("GET", "/api/tracked-products"),
+    ("GET", "/api/export/prod-uuid-1234/csv"),
+    ("GET", "/api/alerts/settings"),
+    ("GET", "/api/alerts/pending"),
+    ("GET", "/api/alerts/history"),
+    ("GET", "/api/account/settings"),
+]
+
+
+@pytest.mark.parametrize("method,endpoint", API_ROUTES_RETURNING_401)
+def test_unauthenticated_api_routes_return_401_even_with_html_accept(client, method, endpoint):
+    """Verify API routes continue returning HTTP 401 JSON even when Accept: text/html is sent."""
+    client_method = getattr(client, method.lower())
+    response = client_method(endpoint, headers={"Accept": "text/html,application/xhtml+xml"})
+    assert response.status_code == 401
+    assert "application/json" in response.headers.get("content-type", "")
+    data = response.json()
+    assert "detail" in data
+
+
+def test_login_post_form_data_redirects_to_next_destination(client, valid_token):
+    """Test POST /login with form data sets session cookie and redirects to next destination."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login?next=/alerts/settings",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/alerts/settings"
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+        assert valid_token in set_cookie
+
+
+def test_login_post_json_data_redirects_to_next_destination(client, valid_token):
+    """Test POST /login with JSON payload sets session cookie and redirects to next destination."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "securepassword", "next": "/tracked?sort=asc"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/tracked?sort=asc"
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+
+
+def test_login_post_unsafe_next_falls_back_to_dashboard(client, valid_token):
+    """Test POST /login with unsafe next parameter safely falls back to /dashboard."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login?next=//evil.example/phish",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/dashboard"
+
+
+def test_login_post_invalid_credentials_renders_login_page_with_error(client):
+    """Test POST /login with invalid credentials re-renders login page with error flash."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.side_effect = Exception("Invalid login credentials")
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/login?next=/tracked",
+            data={"email": "wrong@example.com", "password": "badpassword"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 200
+        assert "Invalid email or password" in response.text
+        assert 'data-next="/tracked"' in response.text
+
+
+def test_api_auth_login_sets_cookie_header(client, valid_token):
+    """Test POST /api/auth/login sets access_token cookie on the response."""
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com")
+    )
+
+    with patch("app.api.routes.auth.get_supabase_client", return_value=mock_sb):
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["access_token"] == valid_token
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token=" in set_cookie
+        assert valid_token in set_cookie
+
+
+def test_login_post_rate_limit_exceeded(client, valid_token):
+    """
+    Test POST /login enforces authentication rate limit (5 attempts/minute).
+    Confirm that successful and failed form and JSON attempts all count toward
+    the quota, and subsequent attempts receive HTTP 429.
+    """
+    mock_sb_success = MagicMock()
+    mock_sb_success.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com"),
+    )
+    mock_sb_fail = MagicMock()
+    mock_sb_fail.auth.sign_in_with_password.side_effect = Exception("Invalid login credentials")
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_success):
+        # Attempt 1: Successful form login -> 303 redirect
+        resp1 = client.post(
+            "/login?next=/dashboard",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp1.status_code == 303
+        assert resp1.headers["location"] == "/dashboard"
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_fail):
+        # Attempt 2: Failed form login -> 200 re-render with error
+        resp2 = client.post(
+            "/login?next=/dashboard",
+            data={"email": "user@example.com", "password": "wrongpassword"},
+            follow_redirects=False,
+        )
+        assert resp2.status_code == 200
+        assert "Invalid email or password" in resp2.text
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_success):
+        # Attempt 3: Successful JSON login -> 303 redirect
+        resp3 = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "securepassword", "next": "/tracked"},
+            follow_redirects=False,
+        )
+        assert resp3.status_code == 303
+        assert resp3.headers["location"] == "/tracked"
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_fail):
+        # Attempt 4: Failed JSON login -> 200 re-render with error
+        resp4 = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "wrongpassword"},
+            follow_redirects=False,
+        )
+        assert resp4.status_code == 200
+        assert "Invalid email or password" in resp4.text
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb_success):
+        # Attempt 5: 5th attempt within quota -> 303 redirect
+        resp5 = client.post(
+            "/login",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp5.status_code == 303
+
+    # Attempt 6: Exceeds rate limit (5/minute) -> 429 Too Many Requests
+    resp6 = client.post(
+        "/login",
+        data={"email": "user@example.com", "password": "securepassword"},
+        follow_redirects=False,
+    )
+    assert resp6.status_code == 429
+    data = resp6.json()
+    assert "Too many requests" in data["detail"]
+
+
+@pytest.fixture
+def production_env(monkeypatch):
+    """Temporarily configure application in production mode."""
+    monkeypatch.setenv("ENV", "production")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_production_cookie_policy_across_operations(production_env, client, valid_token, expired_token):
+    """
+    Verify production session-cookie policy restricts cookies to HTTPS across:
+    1. API login (/api/auth/login)
+    2. Web login (POST /login form and json)
+    3. Bearer-to-cookie conversion (GET protected page with bearer)
+    4. Expiration cleanup (GET protected page with expired cookie)
+    5. Logout (GET /logout)
+    """
+    # 1. API Login in production
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com"),
+    )
+    with patch("app.api.routes.auth.get_supabase_client", return_value=mock_sb):
+        resp_api = client.post(
+            "/api/auth/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+        )
+        assert resp_api.status_code == 200
+        cookie_api = resp_api.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_api
+        assert "secure" in cookie_api.lower()
+        assert "samesite=strict" in cookie_api.lower()
+        assert "path=/" in cookie_api.lower()
+
+    # 2. Web Login in production (form and json)
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        resp_web_form = client.post(
+            "/login",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp_web_form.status_code == 303
+        cookie_web_form = resp_web_form.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_web_form
+        assert "secure" in cookie_web_form.lower()
+        assert "samesite=strict" in cookie_web_form.lower()
+        assert "path=/" in cookie_web_form.lower()
+
+        resp_web_json = client.post(
+            "/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp_web_json.status_code == 303
+        cookie_web_json = resp_web_json.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_web_json
+        assert "secure" in cookie_web_json.lower()
+        assert "samesite=strict" in cookie_web_json.lower()
+        assert "path=/" in cookie_web_json.lower()
+
+    # 3. Bearer-to-cookie conversion in production
+    resp_bearer = client.get(
+        "/dashboard",
+        headers={"Authorization": f"Bearer {valid_token}"},
+        follow_redirects=False,
+    )
+    assert resp_bearer.status_code == 200
+    cookie_bearer = resp_bearer.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_bearer
+    assert "secure" in cookie_bearer.lower()
+    assert "samesite=strict" in cookie_bearer.lower()
+    assert "path=/" in cookie_bearer.lower()
+
+    # 4. Expiration cleanup in production
+    resp_expired = client.get(
+        "/dashboard",
+        cookies={"access_token": expired_token},
+        follow_redirects=False,
+    )
+    assert resp_expired.status_code == 303
+    cookie_expired = resp_expired.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_expired
+    assert "max-age=0" in cookie_expired.lower()
+    assert "secure" in cookie_expired.lower()
+    assert "samesite=strict" in cookie_expired.lower()
+    assert "path=/" in cookie_expired.lower()
+
+    # 5. Logout in production
+    resp_logout = client.get("/logout", follow_redirects=False)
+    assert resp_logout.status_code == 303
+    cookie_logout = resp_logout.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_logout
+    assert "max-age=0" in cookie_logout.lower()
+    assert "secure" in cookie_logout.lower()
+    assert "samesite=strict" in cookie_logout.lower()
+    assert "path=/" in cookie_logout.lower()
+
+
+def test_development_cookie_policy_permits_http(client, valid_token, expired_token):
+    """
+    Verify development/test session-cookie policy does NOT mandate Secure flag,
+    allowing local HTTP development and automated testing.
+    """
+    # 1. API Login in dev
+    mock_sb = MagicMock()
+    mock_sb.auth.sign_in_with_password.return_value = MagicMock(
+        session=MagicMock(access_token=valid_token),
+        user=MagicMock(id="user-123", email="user@example.com"),
+    )
+    with patch("app.api.routes.auth.get_supabase_client", return_value=mock_sb):
+        resp_api = client.post(
+            "/api/auth/login",
+            json={"email": "user@example.com", "password": "securepassword"},
+        )
+        assert resp_api.status_code == 200
+        cookie_api = resp_api.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_api
+        assert "secure" not in cookie_api.lower()
+
+    # 2. Web Login in dev
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        resp_web = client.post(
+            "/login",
+            data={"email": "user@example.com", "password": "securepassword"},
+            follow_redirects=False,
+        )
+        assert resp_web.status_code == 303
+        cookie_web = resp_web.headers.get("set-cookie", "")
+        assert "access_token=" in cookie_web
+        assert "secure" not in cookie_web.lower()
+
+    # 3. Expiration cleanup in dev
+    resp_expired = client.get(
+        "/dashboard",
+        cookies={"access_token": expired_token},
+        follow_redirects=False,
+    )
+    assert resp_expired.status_code == 303
+    cookie_expired = resp_expired.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_expired
+    assert "secure" not in cookie_expired.lower()
+
+    # 4. Logout in dev
+    resp_logout = client.get("/logout", follow_redirects=False)
+    assert resp_logout.status_code == 303
+    cookie_logout = resp_logout.headers.get("set-cookie", "")
+    assert "access_token=" in cookie_logout
+    assert "secure" not in cookie_logout.lower()
+
+

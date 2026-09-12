@@ -72,7 +72,7 @@
             <span id="error-text"></span>
         </div>
 
-        <form id="login-form" class="space-y-4" data-next="{{ next or '' }}">
+        <form id="login-form" method="POST" action="/login{% if next %}?next={{ next|urlencode }}{% endif %}" class="space-y-4" data-next="{{ next or '' }}">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Email</label>
                 <input
@@ -171,6 +171,22 @@
             }
         }
 
+        function getSafeRedirectDestination(url, defaultPath = '/dashboard') {
+            if (!url || typeof url !== 'string') return defaultPath;
+            const candidate = url.trim();
+            if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//') || candidate.startsWith('/\\') || candidate.includes('\\') || candidate.toLowerCase().includes('%5c')) {
+                return defaultPath;
+            }
+            const lower = candidate.toLowerCase();
+            const disallowed = ['/api', '/static', '/login', '/logout', '/signup', '/forgot-password', '/reset-password'];
+            for (const prefix of disallowed) {
+                if (lower === prefix || lower.startsWith(prefix + '/') || lower.startsWith(prefix + '?')) {
+                    return defaultPath;
+                }
+            }
+            return candidate;
+        }
+
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             submitBtn.disabled = true;
@@ -191,13 +207,10 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    document.cookie = `access_token=${data.access_token}; path=/; SameSite=Strict`;
-                    const safeNextUrl = form.dataset.next;
-                    if (safeNextUrl) {
-                        window.location.href = safeNextUrl;
-                    } else {
-                        window.location.href = '/dashboard';
-                    }
+                    document.cookie = `access_token=${data.access_token}; path=/; SameSite=Strict${window.location.protocol === 'https:' ? '; Secure' : ''}`;
+                    const rawNext = form.dataset.next || urlParams.get('next');
+                    const target = getSafeRedirectDestination(rawNext, '/dashboard');
+                    window.location.href = target;
                 } else {
                     throw new Error(data.detail || 'Login failed');
                 }

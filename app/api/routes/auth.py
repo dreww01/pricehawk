@@ -4,11 +4,11 @@ Uses Supabase Auth for user management.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from pydantic import BaseModel, EmailStr
 
 from app.core.config import get_settings
-from app.core.security import get_current_user, CurrentUser
+from app.core.security import get_current_user, CurrentUser, set_access_token_cookie
 from app.db.database import get_supabase_client
 from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
 
@@ -35,7 +35,7 @@ class AuthResponse(BaseModel):
 
 @router.post("/login", response_model=AuthResponse)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def login(request: Request, login_data: LoginRequest):
+async def login(request: Request, login_data: LoginRequest, http_response: Response):
     """Login with email and password."""
     client = get_supabase_client()
 
@@ -50,6 +50,8 @@ async def login(request: Request, login_data: LoginRequest):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid credentials"
             )
+
+        set_access_token_cookie(http_response, response.session.access_token)
 
         return AuthResponse(
             access_token=response.session.access_token,

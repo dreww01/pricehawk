@@ -53,7 +53,14 @@
 
 {% block scripts %}
 <script>
-    const accessToken = document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1];
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+    }
+
+    const accessToken = getCookie('access_token');
     let allInsights = [];
     let currentFilter = 'all';
 

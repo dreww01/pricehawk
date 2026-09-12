@@ -196,11 +196,35 @@
 
 {% block scripts %}
 <script>
-    const accessToken = document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1];
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+    }
+
+    const accessToken = getCookie('access_token');
     let discoveredProducts = [];
     let selectedUrls = new Set();
     let currentView = 'grid';
     let stockFilter = 'all';
+
+    function getSafeCurrentDestination(defaultPath = '/discover') {
+        const dest = window.location.pathname + (window.location.search || '');
+        if (!dest || !dest.startsWith('/') || dest.startsWith('//') || dest.startsWith('/\\') || dest.includes('\\') || dest.toLowerCase().includes('%5c')) {
+            return defaultPath;
+        }
+        return dest;
+    }
+
+    function handleAuthError(response) {
+        if (response.status === 401) {
+            const dest = getSafeCurrentDestination('/discover');
+            window.location.href = '/login?next=' + encodeURIComponent(dest) + '&notice=session_expired';
+            return true;
+        }
+        return false;
+    }
 
     const form = document.getElementById('discovery-form');
     const discoverBtn = document.getElementById('discover-btn');
@@ -252,6 +276,8 @@
                 headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url, keyword: keyword || null, limit })
             });
+
+            if (handleAuthError(response)) return;
 
             if (!response.ok) {
                 const data = await response.json();
@@ -470,6 +496,8 @@
                 headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ group_name: groupName, products: productsToTrack, alert_threshold_percent: threshold })
             });
+
+            if (handleAuthError(response)) return;
 
             if (!response.ok) throw new Error('Failed to add products. Please try again or select fewer products.');
 

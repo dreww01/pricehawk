@@ -30,7 +30,7 @@ from app.api.routes import (
     tracked_products,
 )
 from app.core.config import get_settings
-from app.core.security import get_safe_redirect_url
+from app.core.security import get_safe_redirect_url, delete_access_token_cookie
 from app.core.version import APPLICATION_VERSION
 from app.middleware.rate_limit import (
     limiter,
@@ -162,20 +162,55 @@ def health_check() -> dict:
 
 @app.exception_handler(401)
 async def unauthorized_handler(request: Request, exc: HTTPException):
-    """Handle 401 errors by redirecting browser requests to login with return path."""
-    if "text/html" in request.headers.get("accept", ""):
+    """
+    Handle 401 errors:
+    - API routes (/api/*) always return HTTP 401 JSON responses.
+    - Page routes always redirect to /login with a safe return destination and notice.
+    """
+    if request.url.path.startswith("/api/") or request.url.path == "/api":
+        return JSONResponse(
+            status_code=401,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None),
+        )
+
+    raw_destination = request.url.path
+    if request.url.query:
+        raw_destination = f"{request.url.path}?{request.url.query}"
+    destination = get_safe_redirect_url(raw_destination, default="/dashboard")
+    err_detail = str(getattr(exc, "detail", "")).lower()
+    is_expired = "expired" in err_detail
+    notice = "session_expired" if is_expired else "login_required"
+
+    response = RedirectResponse(
+        url=f"/login?next={quote(destination)}&notice={notice}",
+        status_code=303,
+    )
+    if is_expired:
+        delete_access_token_cookie(response)
+    return response
+
+
+@app.exception_handler(403)
+async def forbidden_handler(request: Request, exc: HTTPException):
+    """
+    Handle 403 errors:
+    - Non-API page routes with 'not authenticated' redirect to login with return path.
+    - All other requests (including all API routes) return HTTP 403 JSON responses.
+    """
+    is_api = request.url.path.startswith("/api/") or request.url.path == "/api"
+    err_detail = str(getattr(exc, "detail", "")).lower()
+    if not is_api and "not authenticated" in err_detail:
         raw_destination = request.url.path
         if request.url.query:
             raw_destination = f"{request.url.path}?{request.url.query}"
         destination = get_safe_redirect_url(raw_destination, default="/dashboard")
-        err_detail = str(getattr(exc, "detail", "")).lower()
-        notice = "session_expired" if "expired" in err_detail else "login_required"
         return RedirectResponse(
-            url=f"/login?next={quote(destination)}&notice={notice}",
+            url=f"/login?next={quote(destination)}&notice=login_required",
             status_code=303,
         )
     return JSONResponse(
-        status_code=401,
+        status_code=403,
         content={"detail": exc.detail},
         headers=getattr(exc, "headers", None),
     )

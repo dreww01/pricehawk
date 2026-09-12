@@ -3,6 +3,7 @@ HTML page routes for the frontend.
 These routes return rendered templates, not JSON.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
@@ -20,12 +21,17 @@ from app.core.security import (
     extract_token,
     get_unified_user_and_token,
     get_safe_redirect_url,
+    set_access_token_cookie,
+    delete_access_token_cookie,
+    get_delete_cookie_header,
 )
 from app.db.database import get_supabase_client
+from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
 
 
 router = APIRouter(tags=["pages"])
 security = HTTPBearer()
+logger = logging.getLogger(__name__)
 
 # Template configuration
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
@@ -77,6 +83,8 @@ async def require_auth(
 
     try:
         user = await verify_token_string(token)
+        if hasattr(request, "state"):
+            request.state.auth_token = token
         return user
     except Exception as e:
         err_msg = str(e).lower()
@@ -85,7 +93,7 @@ async def require_auth(
         redirect_url = f"/login?next={quote(destination)}&notice={notice}"
         headers = {
             "Location": redirect_url,
-            "Set-Cookie": "access_token=; Max-Age=0; Path=/; SameSite=Strict",
+            "Set-Cookie": get_delete_cookie_header(),
         }
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER,
@@ -130,11 +138,15 @@ def template_response(
     }
     if context:
         ctx.update(context)
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request=request,
         name=template_name,
         context=ctx,
     )
+    auth_token = getattr(getattr(request, "state", None), "auth_token", None)
+    if auth_token and not request.cookies.get("access_token"):
+        set_access_token_cookie(response, auth_token)
+    return response
 
 
 # ============================================================================
@@ -152,6 +164,78 @@ async def login_page(
     if user:
         return RedirectResponse(url=safe_next or "/dashboard", status_code=303)
     return template_response(request, "auth/login.html", context={"next": safe_next})
+
+
+@router.post("/login")
+@limiter.limit(AUTH_RATE_LIMIT)
+async def login_post(
+    request: Request,
+):
+    """
+    Handle web form login submissions.
+    On success, sets access_token cookie and redirects to next destination.
+    """
+    next_url = request.query_params.get("next")
+    content_type = request.headers.get("content-type", "")
+    email = ""
+    password = ""
+    form_next = None
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            email = body.get("email", "")
+            password = body.get("password", "")
+            form_next = body.get("next")
+        except Exception:
+            pass
+    else:
+        try:
+            form_data = await request.form()
+            email = form_data.get("email", "")
+            password = form_data.get("password", "")
+            form_next = form_data.get("next")
+        except Exception:
+            pass
+
+    safe_next = get_safe_redirect_url(form_next or next_url, default="/dashboard")
+
+    if not email or not password:
+        flash_messages = [{"type": "error", "text": "Email and password are required"}]
+        return template_response(
+            request,
+            "auth/login.html",
+            context={"next": safe_next, "flash_messages": flash_messages},
+        )
+
+    client = get_supabase_client()
+    try:
+        auth_resp = client.auth.sign_in_with_password({
+            "email": str(email),
+            "password": str(password),
+        })
+
+        if not auth_resp.session:
+            flash_messages = [{"type": "error", "text": "Invalid email or password"}]
+            return template_response(
+                request,
+                "auth/login.html",
+                context={"next": safe_next, "flash_messages": flash_messages},
+            )
+
+        target = safe_next or "/dashboard"
+        response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+        set_access_token_cookie(response, auth_resp.session.access_token)
+        return response
+
+    except Exception as e:
+        logger.exception(f"Web login error for {email}: {e}")
+        flash_messages = [{"type": "error", "text": "Invalid email or password"}]
+        return template_response(
+            request,
+            "auth/login.html",
+            context={"next": safe_next, "flash_messages": flash_messages},
+        )
 
 
 @router.get("/signup", response_class=HTMLResponse)
@@ -271,11 +355,20 @@ async def account_settings_page(
     return template_response(request, "account/settings.html", user=user)
 
 
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(
+    request: Request,
+    user: CurrentUser = Depends(require_auth)
+):
+    """General settings route redirecting to account settings."""
+    return RedirectResponse(url="/account/settings", status_code=303)
+
+
 @router.get("/logout")
 async def logout():
     """Logout and clear session cookie."""
     response = RedirectResponse(url="/login", status_code=303)
-    response.delete_cookie("access_token", path="/")
+    delete_access_token_cookie(response)
     return response
 
 

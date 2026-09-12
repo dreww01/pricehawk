@@ -111,16 +111,41 @@
 
 {% block scripts %}
 <script>
-    const token = document.cookie.split('; ').find(row => row.startsWith('access_token='))?.split('=')[1];
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return '';
+    }
+
+    const token = getCookie('access_token');
     const headers = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
     };
 
+    function getSafeCurrentDestination(defaultPath = '/account/settings') {
+        const dest = window.location.pathname + (window.location.search || '');
+        if (!dest || !dest.startsWith('/') || dest.startsWith('//') || dest.startsWith('/\\') || dest.includes('\\') || dest.toLowerCase().includes('%5c')) {
+            return defaultPath;
+        }
+        return dest;
+    }
+
+    function handleAuthError(response) {
+        if (response.status === 401) {
+            const dest = getSafeCurrentDestination('/account/settings');
+            window.location.href = '/login?next=' + encodeURIComponent(dest) + '&notice=session_expired';
+            return true;
+        }
+        return false;
+    }
+
     // Load account info
     async function loadAccountInfo() {
         try {
             const response = await fetch('/api/account/settings', { headers });
+            if (handleAuthError(response)) return;
             const data = await response.json();
             document.getElementById('user-email').textContent = data.email;
         } catch (err) {
@@ -161,6 +186,8 @@
                 })
             });
 
+            if (handleAuthError(response)) return;
+
             const data = await response.json();
 
             if (response.ok) {
@@ -197,6 +224,8 @@
                 headers,
                 body: JSON.stringify({ new_email: form.new_email.value })
             });
+
+            if (handleAuthError(response)) return;
 
             const data = await response.json();
 
@@ -236,6 +265,8 @@
                 method: 'DELETE',
                 headers
             });
+
+            if (handleAuthError(response)) return;
 
             const data = await response.json();
 
