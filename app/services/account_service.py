@@ -21,11 +21,13 @@ logger = logging.getLogger(__name__)
 # Concurrency control for in-process tracking fallbacks
 _account_lock = threading.Lock()
 _deleted_users: set[str] = set()
+_deleting_users: set[str] = set()
 _deleted_products: set[str] = set()
 _active_tasks_by_user: dict[str, set[str]] = defaultdict(set)
 _active_tasks_by_product: dict[str, set[str]] = defaultdict(set)
 
 DELETION_TTL_SECONDS = 86400  # 24 hours retention for deletion markers in Redis
+DELETING_IN_PROGRESS_TTL_SECONDS = 300  # 5 minutes transient retention for in-flight deletion
 
 
 def _get_redis_conn() -> Optional[Any]:
@@ -67,8 +69,63 @@ def register_active_scrape_task(user_id: str, product_id: str, task_id: str) -> 
             logger.debug(f"Failed to register task {task_id} in Redis: {exc}")
 
 
+def mark_deletion_in_progress(user_id: str) -> None:
+    """Record that an account deletion is in progress to guard background tasks without revoking sessions."""
+    if not user_id:
+        return
+
+    with _account_lock:
+        _deleting_users.add(user_id)
+
+    redis_conn = _get_redis_conn()
+    if redis_conn:
+        try:
+            redis_conn.setex(f"deleting_user:{user_id}", DELETING_IN_PROGRESS_TTL_SECONDS, "1")
+        except Exception as exc:
+            logger.debug(f"Failed to set deleting_user in Redis for {user_id}: {exc}")
+
+
+def clear_deletion_in_progress(user_id: str) -> None:
+    """Clear deletion-in-progress state upon completion or rollback."""
+    if not user_id:
+        return
+
+    with _account_lock:
+        _deleting_users.discard(user_id)
+
+    redis_conn = _get_redis_conn()
+    if redis_conn:
+        try:
+            redis_conn.delete(f"deleting_user:{user_id}")
+        except Exception as exc:
+            logger.debug(f"Failed to clear deleting_user in Redis for {user_id}: {exc}")
+
+
+def is_deletion_in_progress(user_id: str) -> bool:
+    """Check whether account deletion is currently underway for a user."""
+    if not user_id:
+        return False
+
+    with _account_lock:
+        if user_id in _deleting_users:
+            return True
+
+    redis_conn = _get_redis_conn()
+    if redis_conn:
+        try:
+            val = redis_conn.get(f"deleting_user:{user_id}")
+            if val:
+                with _account_lock:
+                    _deleting_users.add(user_id)
+                return True
+        except Exception as exc:
+            logger.debug(f"Failed to query deleting_user in Redis for {user_id}: {exc}")
+
+    return False
+
+
 def mark_user_deleted(user_id: str) -> None:
-    """Record that a user account has been deleted to guard background workers and token auth."""
+    """Record that a user account has been permanently deleted to guard background workers."""
     if not user_id:
         return
 
@@ -82,13 +139,6 @@ def mark_user_deleted(user_id: str) -> None:
         except Exception as exc:
             logger.debug(f"Failed to set deleted_user in Redis for {user_id}: {exc}")
 
-    # Also invalidate user sessions across security layer
-    try:
-        from app.core.security import revoke_user_sessions
-        revoke_user_sessions(user_id, ttl_seconds=DELETION_TTL_SECONDS)
-    except Exception as exc:
-        logger.debug(f"Failed to invoke revoke_user_sessions for {user_id}: {exc}")
-
 
 def unmark_user_deleted(user_id: str) -> None:
     """Clear deletion and revocation markers for a user if deletion fails, keeping retries safe."""
@@ -97,13 +147,15 @@ def unmark_user_deleted(user_id: str) -> None:
 
     with _account_lock:
         _deleted_users.discard(user_id)
+        _deleting_users.discard(user_id)
 
     redis_conn = _get_redis_conn()
     if redis_conn:
         try:
             redis_conn.delete(f"deleted_user:{user_id}")
+            redis_conn.delete(f"deleting_user:{user_id}")
         except Exception as exc:
-            logger.debug(f"Failed to clear deleted_user in Redis for {user_id}: {exc}")
+            logger.debug(f"Failed to clear deleted/deleting user in Redis for {user_id}: {exc}")
 
     try:
         from app.core.security import unrevoke_user_sessions
@@ -113,24 +165,22 @@ def unmark_user_deleted(user_id: str) -> None:
 
 
 def is_user_deleted(user_id: str) -> bool:
-    """Check whether a user account has been marked deleted."""
+    """Check whether a user account has been marked deleted or is currently undergoing deletion."""
     if not user_id:
         return False
 
     with _account_lock:
-        if user_id in _deleted_users:
+        if user_id in _deleted_users or user_id in _deleting_users:
             return True
 
     redis_conn = _get_redis_conn()
     if redis_conn:
         try:
-            val = redis_conn.get(f"deleted_user:{user_id}")
+            val = redis_conn.get(f"deleted_user:{user_id}") or redis_conn.get(f"deleting_user:{user_id}")
             if val:
-                with _account_lock:
-                    _deleted_users.add(user_id)
                 return True
         except Exception as exc:
-            logger.debug(f"Failed to query deleted_user in Redis for {user_id}: {exc}")
+            logger.debug(f"Failed to query deleted/deleting user in Redis for {user_id}: {exc}")
 
     # Cross-check session revocation marker
     try:
@@ -196,7 +246,7 @@ def cancel_tasks_for_user(
     - Returns the list of revoked task IDs
     """
     product_ids = product_ids or []
-    mark_user_deleted(user_id)
+    mark_deletion_in_progress(user_id)
     for pid in product_ids:
         mark_product_deleted(pid)
 
@@ -292,34 +342,39 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
         "tables_cleaned": [],
     }
 
-    # Step 1: Discover products and competitors owned by the user
-    product_ids: list[str] = []
     try:
-        products_res = client.table("products").select("id").eq("user_id", user_id).execute()
-        if products_res and products_res.data:
-            product_ids = [
-                p["id"] for p in products_res.data
-                if isinstance(p, dict) and "id" in p and p["id"]
-            ]
-        summary["products_found"] = len(product_ids)
-    except Exception as exc:
-        logger.warning(f"Failed to list products for user {user_id}: {exc}")
+        # Mark deletion in progress to guard background tasks
+        mark_deletion_in_progress(user_id)
 
-    competitor_ids: list[str] = []
-    if product_ids:
+        # Step 1: Discover products and competitors owned by the user
+        product_ids: list[str] = []
         try:
-            comp_res = client.table("competitors").select("id").in_("product_id", product_ids).execute()
-            if comp_res and comp_res.data:
-                competitor_ids = [
-                    c["id"] for c in comp_res.data
-                    if isinstance(c, dict) and "id" in c and c["id"]
+            products_res = client.table("products").select("id").eq("user_id", user_id).execute()
+            if products_res and products_res.data:
+                product_ids = [
+                    p["id"] for p in products_res.data
+                    if isinstance(p, dict) and "id" in p and p["id"]
                 ]
-            summary["competitors_found"] = len(competitor_ids)
+            summary["products_found"] = len(product_ids)
         except Exception as exc:
-            logger.warning(f"Failed to list competitors for user {user_id}: {exc}")
+            logger.error(f"Failed to list products for user {user_id}: {exc}")
+            raise RuntimeError(f"Database error discovering products for {user_id}: {exc}") from exc
 
-    # Step 2: Stop background tasks and mark entities deleted before starting DB deletions
-    try:
+        competitor_ids: list[str] = []
+        if product_ids:
+            try:
+                comp_res = client.table("competitors").select("id").in_("product_id", product_ids).execute()
+                if comp_res and comp_res.data:
+                    competitor_ids = [
+                        c["id"] for c in comp_res.data
+                        if isinstance(c, dict) and "id" in c and c["id"]
+                    ]
+                summary["competitors_found"] = len(competitor_ids)
+            except Exception as exc:
+                logger.error(f"Failed to list competitors for user {user_id}: {exc}")
+                raise RuntimeError(f"Database error discovering competitors for {user_id}: {exc}") from exc
+
+        # Step 2: Stop background tasks
         revoked_tasks = cancel_tasks_for_user(
             user_id=user_id,
             product_ids=product_ids,
@@ -327,74 +382,89 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
         )
         summary["tasks_revoked"] = len(revoked_tasks)
 
-        # Step 3: Delete dependent child tables first, then parents to guarantee zero orphaned rows
-
-        # 3a. price_history (grandchild table of products via competitors)
-        if competitor_ids:
+        # Attempt atomic server-side deletion RPC if supported
+        atomic_success = False
+        if hasattr(client, "rpc") and callable(getattr(client, "rpc", None)):
             try:
-                client.table("price_history").delete().in_("competitor_id", competitor_ids).execute()
-                summary["tables_cleaned"].append("price_history")
+                rpc_res = client.rpc("delete_user_account_atomic", {"target_user_id": user_id}).execute()
+                if rpc_res and not getattr(rpc_res, "error", None):
+                    summary["tables_cleaned"].extend([
+                        "price_history", "competitors", "insights", "tracking_jobs",
+                        "pending_alerts", "alert_history", "user_alert_settings", "products"
+                    ])
+                    atomic_success = True
+            except Exception as rpc_exc:
+                logger.debug(f"Server-side atomic deletion RPC not executed, proceeding with ordered cascade: {rpc_exc}")
+
+        if not atomic_success:
+            # Step 3: Delete dependent child tables first, then parents to guarantee zero orphaned rows
+
+            # 3a. price_history (grandchild table of products via competitors)
+            if competitor_ids:
+                try:
+                    client.table("price_history").delete().in_("competitor_id", competitor_ids).execute()
+                    summary["tables_cleaned"].append("price_history")
+                except Exception as exc:
+                    logger.error(f"Failed to delete price_history for user {user_id}: {exc}")
+                    raise
+
+            # 3b. competitors (child table of products)
+            if product_ids:
+                try:
+                    client.table("competitors").delete().in_("product_id", product_ids).execute()
+                    summary["tables_cleaned"].append("competitors")
+                except Exception as exc:
+                    logger.error(f"Failed to delete competitors for user {user_id}: {exc}")
+                    raise
+
+            # 3c. insights (child table of products)
+            if product_ids:
+                try:
+                    client.table("insights").delete().in_("product_id", product_ids).execute()
+                    summary["tables_cleaned"].append("insights")
+                except Exception as exc:
+                    logger.error(f"Failed to delete insights for user {user_id}: {exc}")
+                    raise
+
+            # 3d. tracking_jobs (direct user table and optional product group relation)
+            try:
+                client.table("tracking_jobs").delete().eq("user_id", user_id).execute()
+                summary["tables_cleaned"].append("tracking_jobs")
             except Exception as exc:
-                logger.error(f"Failed to delete price_history for user {user_id}: {exc}")
+                logger.error(f"Failed to delete tracking_jobs for user {user_id}: {exc}")
                 raise
 
-        # 3b. competitors (child table of products)
-        if product_ids:
+            # 3e. pending_alerts (direct user table referencing products and competitors)
             try:
-                client.table("competitors").delete().in_("product_id", product_ids).execute()
-                summary["tables_cleaned"].append("competitors")
+                client.table("pending_alerts").delete().eq("user_id", user_id).execute()
+                summary["tables_cleaned"].append("pending_alerts")
             except Exception as exc:
-                logger.error(f"Failed to delete competitors for user {user_id}: {exc}")
+                logger.error(f"Failed to delete pending_alerts for user {user_id}: {exc}")
                 raise
 
-        # 3c. insights (child table of products)
-        if product_ids:
+            # 3f. alert_history (direct user table recording sent digests)
             try:
-                client.table("insights").delete().in_("product_id", product_ids).execute()
-                summary["tables_cleaned"].append("insights")
+                client.table("alert_history").delete().eq("user_id", user_id).execute()
+                summary["tables_cleaned"].append("alert_history")
             except Exception as exc:
-                logger.error(f"Failed to delete insights for user {user_id}: {exc}")
+                logger.error(f"Failed to delete alert_history for user {user_id}: {exc}")
                 raise
 
-        # 3d. tracking_jobs (direct user table and optional product group relation)
-        try:
-            client.table("tracking_jobs").delete().eq("user_id", user_id).execute()
-            summary["tables_cleaned"].append("tracking_jobs")
-        except Exception as exc:
-            logger.error(f"Failed to delete tracking_jobs for user {user_id}: {exc}")
-            raise
+            # 3g. user_alert_settings (direct user table holding notification credentials & webhook secret)
+            try:
+                client.table("user_alert_settings").delete().eq("user_id", user_id).execute()
+                summary["tables_cleaned"].append("user_alert_settings")
+            except Exception as exc:
+                logger.error(f"Failed to delete user_alert_settings for user {user_id}: {exc}")
+                raise
 
-        # 3e. pending_alerts (direct user table referencing products and competitors)
-        try:
-            client.table("pending_alerts").delete().eq("user_id", user_id).execute()
-            summary["tables_cleaned"].append("pending_alerts")
-        except Exception as exc:
-            logger.error(f"Failed to delete pending_alerts for user {user_id}: {exc}")
-            raise
-
-        # 3f. alert_history (direct user table recording sent digests)
-        try:
-            client.table("alert_history").delete().eq("user_id", user_id).execute()
-            summary["tables_cleaned"].append("alert_history")
-        except Exception as exc:
-            logger.error(f"Failed to delete alert_history for user {user_id}: {exc}")
-            raise
-
-        # 3g. user_alert_settings (direct user table holding notification credentials & webhook secret)
-        try:
-            client.table("user_alert_settings").delete().eq("user_id", user_id).execute()
-            summary["tables_cleaned"].append("user_alert_settings")
-        except Exception as exc:
-            logger.error(f"Failed to delete user_alert_settings for user {user_id}: {exc}")
-            raise
-
-        # 3h. products (direct user table)
-        try:
-            client.table("products").delete().eq("user_id", user_id).execute()
-            summary["tables_cleaned"].append("products")
-        except Exception as exc:
-            logger.error(f"Failed to delete products for user {user_id}: {exc}")
-            raise
+            # 3h. products (direct user table)
+            try:
+                client.table("products").delete().eq("user_id", user_id).execute()
+                summary["tables_cleaned"].append("products")
+            except Exception as exc:
+                logger.error(f"Failed to delete products for user {user_id}: {exc}")
+                raise
 
         # Step 4: Remove identity from Supabase Auth admin API (required and verified)
         admin_auth = getattr(getattr(client, "auth", None), "admin", None)
@@ -440,7 +510,11 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
         except Exception as exc:
             logger.debug(f"Dashboard cache invalidation error for {user_id}: {exc}")
 
-        # Step 6: Revoke active session tokens
+        # Step 6: Mark user permanently deleted and clear deletion-in-progress
+        mark_user_deleted(user_id)
+        clear_deletion_in_progress(user_id)
+
+        # Step 7: Revoke active session tokens across security layer
         try:
             from app.core.security import revoke_user_sessions
             revoke_user_sessions(user_id)
@@ -450,6 +524,7 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
         return summary
 
     except Exception:
+        clear_deletion_in_progress(user_id)
         unmark_user_deleted(user_id)
         raise
 
@@ -458,6 +533,7 @@ def clear_account_deletion_state() -> None:
     """Clear in-memory state tracking (intended for unit and integration test teardown)."""
     with _account_lock:
         _deleted_users.clear()
+        _deleting_users.clear()
         _deleted_products.clear()
         _active_tasks_by_user.clear()
         _active_tasks_by_product.clear()

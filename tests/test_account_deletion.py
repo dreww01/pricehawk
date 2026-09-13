@@ -736,3 +736,196 @@ def test_account_deletion_auth_failure_allows_safe_retry(client: TestClient):
         assert is_user_deleted(user_id)
         assert is_session_revoked(user_id)
 
+
+# ============================================================================
+# 6. Database Deletion Failure Recovery & Safe Retry Tests (REV-02)
+# ============================================================================
+
+def test_cancel_tasks_does_not_prematurely_revoke_user_sessions():
+    """
+    REV-02: cancel_tasks_for_user halts background scraping tasks by setting
+    deletion-in-progress, but does NOT invalidate active authentication tokens.
+    """
+    user_id = "user-no-pre-revoke"
+    prod_id = "prod-no-pre-revoke"
+
+    cancel_tasks_for_user(user_id=user_id, product_ids=[prod_id])
+
+    # Background workers see the user and product as halting/deleted
+    assert is_user_deleted(user_id)
+    assert is_product_deleted(prod_id)
+
+    # BUT authentication tokens are NOT revoked prematurely
+    assert not is_session_revoked(user_id)
+
+
+def test_deletion_fails_on_product_discovery_error_and_does_not_strand_data(client: TestClient):
+    """
+    REV-02: When product discovery fails due to a database error, the deletion must
+    abort with HTTP 400, not return success, not strand data, and allow safe retry.
+    """
+    user_id = "user-disc-err-1"
+    email = "discerr@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    prod_id = "prod-disc-1"
+    comp_id = "comp-disc-1"
+    db.tables["products"] = [{"id": prod_id, "user_id": user_id, "product_name": "P1"}]
+    db.tables["competitors"] = [{"id": comp_id, "product_id": prod_id, "url": "https://p1.com"}]
+    db.tables["price_history"] = [{"id": "ph-disc-1", "competitor_id": comp_id, "price": Decimal("10")}]
+    db.tables["user_alert_settings"] = [{"id": "s-disc-1", "user_id": user_id}]
+
+    # Simulate database error on product discovery
+    orig_table = db.table
+    def failing_table(table_name: str):
+        if table_name == "products":
+            mock_q = MockTableQuery(table_name, db)
+            def failing_execute():
+                if mock_q._action == "select":
+                    raise RuntimeError("Transient PostgreSQL connection failure on products select")
+                return db._execute_table(mock_q)
+            mock_q.execute = failing_execute
+            return mock_q
+        return orig_table(table_name)
+
+    db.table = failing_table
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        # First attempt: failure on discovery
+        resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp1.status_code == 400
+        assert "Unable to delete account" in resp1.json()["detail"]
+
+        # Data is preserved and not stranded or partially cleaned
+        assert len(db.tables["products"]) == 1
+        assert len(db.tables["competitors"]) == 1
+        assert len(db.tables["price_history"]) == 1
+        assert len(db.tables["user_alert_settings"]) == 1
+
+        # User is not locked out
+        assert not is_session_revoked(user_id)
+        assert not is_user_deleted(user_id)
+
+        # Database recovers
+        db.table = orig_table
+
+        # Retry succeeds completely
+        resp2 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp2.status_code == 200
+        assert len(db.tables["products"]) == 0
+        assert len(db.tables["competitors"]) == 0
+        assert len(db.tables["price_history"]) == 0
+        assert len(db.tables["user_alert_settings"]) == 0
+        assert is_user_deleted(user_id)
+        assert is_session_revoked(user_id)
+
+
+def test_deletion_fails_on_intermediate_table_cleanup_and_allows_safe_retry(client: TestClient):
+    """
+    REV-02: When a database error occurs during child table cleanup (e.g. competitors),
+    the endpoint returns HTTP 400, leaves the user token valid, and allows a subsequent
+    retry to complete remaining table deletions cleanly without stranding data.
+    """
+    user_id = "user-inter-err-1"
+    email = "intererr@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    prod_id = "prod-inter-1"
+    comp_id = "comp-inter-1"
+    db.tables["products"] = [{"id": prod_id, "user_id": user_id, "product_name": "P2"}]
+    db.tables["competitors"] = [{"id": comp_id, "product_id": prod_id, "url": "https://p2.com"}]
+    db.tables["price_history"] = [{"id": "ph-inter-1", "competitor_id": comp_id, "price": Decimal("20")}]
+    db.tables["insights"] = [{"id": "ins-inter-1", "product_id": prod_id, "insight_text": "Good"}]
+
+    # Fail on delete from competitors table
+    orig_table = db.table
+    def failing_comp_table(table_name: str):
+        if table_name == "competitors":
+            mock_q = MockTableQuery(table_name, db)
+            def failing_execute():
+                if mock_q._action == "delete":
+                    raise RuntimeError("Competitors delete failed due to deadlock")
+                return db._execute_table(mock_q)
+            mock_q.execute = failing_execute
+            return mock_q
+        return orig_table(table_name)
+
+    db.table = failing_comp_table
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp1.status_code == 400
+
+        # User is NOT locked out
+        assert not is_session_revoked(user_id)
+        assert not is_user_deleted(user_id)
+
+        # Database recovers
+        db.table = orig_table
+
+        # Retry succeeds
+        resp2 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp2.status_code == 200
+        assert len(db.tables["products"]) == 0
+        assert len(db.tables["competitors"]) == 0
+        assert len(db.tables["price_history"]) == 0
+        assert len(db.tables["insights"]) == 0
+        assert is_user_deleted(user_id)
+        assert is_session_revoked(user_id)
+
+
+def test_deletion_fails_on_user_table_cleanup_and_allows_safe_retry(client: TestClient):
+    """
+    REV-02: When a database error occurs during direct user table cleanup (e.g. user_alert_settings),
+    the endpoint returns HTTP 400 and preserves safe retryability.
+    """
+    user_id = "user-direct-err-1"
+    email = "directerr@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    prod_id = "prod-direct-1"
+    db.tables["products"] = [{"id": prod_id, "user_id": user_id, "product_name": "P3"}]
+    db.tables["user_alert_settings"] = [{"id": "s-direct-1", "user_id": user_id, "webhook_url": "https://h.com"}]
+
+    orig_table = db.table
+    def failing_settings_table(table_name: str):
+        if table_name == "user_alert_settings":
+            mock_q = MockTableQuery(table_name, db)
+            def failing_execute():
+                if mock_q._action == "delete":
+                    raise RuntimeError("Settings table lock timeout")
+                return db._execute_table(mock_q)
+            mock_q.execute = failing_execute
+            return mock_q
+        return orig_table(table_name)
+
+    db.table = failing_settings_table
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp1.status_code == 400
+
+        # User is NOT locked out
+        assert not is_session_revoked(user_id)
+        assert not is_user_deleted(user_id)
+
+        # Database recovers
+        db.table = orig_table
+
+        # Retry succeeds
+        resp2 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp2.status_code == 200
+        assert len(db.tables["user_alert_settings"]) == 0
+        assert len(db.tables["products"]) == 0
+        assert is_user_deleted(user_id)
+        assert is_session_revoked(user_id)
+
