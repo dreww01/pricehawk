@@ -8,7 +8,12 @@ import redis
 
 from app.tasks.celery_app import celery_app
 from app.db.database import get_supabase_client
-from app.services.scraper_service import scrape_and_check_alerts, scrape_url
+from app.services.scraper_service import (
+    classify_scrape_exception,
+    scrape_and_check_alerts,
+    scrape_url,
+    ScrapeFailureReason,
+)
 from app.services.alert_service import AlertService
 from app.services.digest_service import DigestService
 from app.core.config import get_settings
@@ -30,15 +35,22 @@ def _get_redis_client():
 
 def set_scrape_progress(task_id: str, data: dict, ttl: int = 300):
     """Store scrape progress in Redis with TTL (default 5 min)."""
-    client = _get_redis_client()
-    client.setex(f"scrape:{task_id}", ttl, json.dumps(data))
+    try:
+        client = _get_redis_client()
+        client.setex(f"scrape:{task_id}", ttl, json.dumps(data))
+    except Exception as exc:
+        logger.warning(f"Failed to update scrape progress in Redis for task {task_id}: {exc}")
 
 
 def get_scrape_progress(task_id: str) -> dict | None:
     """Get scrape progress from Redis."""
-    client = _get_redis_client()
-    data = client.get(f"scrape:{task_id}")
-    return json.loads(data) if data else None
+    try:
+        client = _get_redis_client()
+        data = client.get(f"scrape:{task_id}")
+        return json.loads(data) if data else None
+    except Exception as exc:
+        logger.warning(f"Failed to read scrape progress from Redis for task {task_id}: {exc}")
+        return None
 
 BATCH_SIZE = 50
 
@@ -70,7 +82,7 @@ def scrape_product_manual(self, product_id: str) -> dict:
     Updates Redis with progress for SSE streaming.
     Called from manual scrape endpoint.
     """
-    task_id = self.request.id
+    task_id = getattr(getattr(self, "request", None), "id", None) or "manual-task"
     client = get_supabase_client()
 
     # Fetch competitors for this product
@@ -106,9 +118,12 @@ def scrape_product_manual(self, product_id: str) -> dict:
     results = []
 
     for i, competitor in enumerate(competitors):
-        competitor_id = competitor["id"]
-        url = competitor["url"]
-        retailer = competitor.get("retailer_name") or _extract_domain(url)
+        competitor_id = competitor.get("id") if isinstance(competitor, dict) else None
+        url = competitor.get("url") if isinstance(competitor, dict) else None
+        retailer = (
+            (competitor.get("retailer_name") if isinstance(competitor, dict) else None)
+            or _extract_domain(url or "")
+        )
 
         # Update progress: starting this competitor
         set_scrape_progress(task_id, {
@@ -119,19 +134,43 @@ def scrape_product_manual(self, product_id: str) -> dict:
             "results": results
         })
 
+        if not competitor_id or not url:
+            result = {
+                "competitor_id": competitor_id or "",
+                "retailer": retailer,
+                "price": None,
+                "currency": "USD",
+                "status": "failed",
+                "error_message": "Invalid competitor configuration: missing competitor ID or URL",
+                "failure_reason": ScrapeFailureReason.INVALID_URL,
+                "retry_count": 0,
+            }
+            results.append(result)
+            set_scrape_progress(task_id, {
+                "status": "scraping",
+                "completed": i + 1,
+                "total": total,
+                "current": retailer,
+                "results": results
+            })
+            continue
+
         try:
             # Scrape the URL
             scrape_result = asyncio.run(scrape_url(url))
 
-            # Store in price_history
-            price_data = {
-                "competitor_id": competitor_id,
-                "price": float(scrape_result.price) if scrape_result.price else None,
-                "currency": scrape_result.currency,
-                "scrape_status": scrape_result.status,
-                "error_message": scrape_result.error_message,
-            }
-            client.table("price_history").insert(price_data).execute()
+            # Store in price_history (isolated from aborting scrape run)
+            try:
+                price_data = {
+                    "competitor_id": competitor_id,
+                    "price": float(scrape_result.price) if scrape_result.price else None,
+                    "currency": scrape_result.currency,
+                    "scrape_status": scrape_result.status,
+                    "error_message": scrape_result.error_message,
+                }
+                client.table("price_history").insert(price_data).execute()
+            except Exception as db_exc:
+                logger.error(f"Failed to persist price_history for competitor {competitor_id}: {db_exc}")
 
             result = {
                 "competitor_id": competitor_id,
@@ -140,17 +179,34 @@ def scrape_product_manual(self, product_id: str) -> dict:
                 "currency": scrape_result.currency,
                 "status": scrape_result.status,
                 "error_message": scrape_result.error_message,
+                "failure_reason": scrape_result.failure_reason,
+                "retry_count": scrape_result.retry_count,
             }
 
         except Exception as e:
-            logger.error(f"Error scraping {url}: {str(e)}")
+            logger.error(f"Error scraping competitor {competitor_id} ({url}): {str(e)}")
+            failure_reason, friendly_msg = classify_scrape_exception(e)
+            try:
+                price_data = {
+                    "competitor_id": competitor_id,
+                    "price": None,
+                    "currency": "USD",
+                    "scrape_status": "failed",
+                    "error_message": friendly_msg,
+                }
+                client.table("price_history").insert(price_data).execute()
+            except Exception as db_exc:
+                logger.error(f"Failed to persist failure in price_history for competitor {competitor_id}: {db_exc}")
+
             result = {
                 "competitor_id": competitor_id,
                 "retailer": retailer,
                 "price": None,
                 "currency": "USD",
-                "status": "error",
-                "error_message": str(e)[:200],
+                "status": "failed",
+                "error_message": friendly_msg,
+                "failure_reason": failure_reason,
+                "retry_count": 0,
             }
 
         results.append(result)
@@ -230,6 +286,9 @@ def scrape_single_competitor(self, competitor_id: str) -> dict:
         "scrape_status": scrape_result.get("status"),
         "price": scrape_result.get("price"),
         "currency": scrape_result.get("currency"),
+        "error_message": scrape_result.get("error"),
+        "failure_reason": scrape_result.get("failure_reason"),
+        "retry_count": scrape_result.get("retry_count", 0),
         "alert_created": alert_result.get("alert_created", False) if alert_result else False
     }
 
