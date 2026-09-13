@@ -24,6 +24,7 @@ class ScrapeFailureReason(StrEnum):
     NETWORK_ERROR = "network_error"
     NOT_FOUND = "not_found"
     INVALID_URL = "invalid_url"
+    DATABASE_ERROR = "database_error"
     UNKNOWN = "unknown"
 
 
@@ -71,6 +72,11 @@ class ScrapeNotFoundError(ScrapeException):
 class ScrapeLayoutError(ScrapeException):
     def __init__(self, message: str = "Page layout changed or unsupported. Price could not be located on the product page."):
         super().__init__(message, failure_reason=ScrapeFailureReason.LAYOUT_CHANGED, retryable=False)
+
+
+class DatabasePersistenceError(ScrapeException):
+    def __init__(self, message: str = "Failed to record price history."):
+        super().__init__(message, failure_reason=ScrapeFailureReason.DATABASE_ERROR, retryable=True)
 
 
 @dataclass
@@ -930,22 +936,38 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             retry_count=0,
         )
 
-    # Store price history (isolated so DB errors don't crash the flow)
-    try:
-        price_data = {
-            "competitor_id": competitor_id,
-            "price": float(scrape_result.price) if scrape_result.price else None,
-            "currency": scrape_result.currency,
-            "scrape_status": scrape_result.status,
-            "error_message": scrape_result.error_message,
-        }
-        sb.table("price_history").insert(price_data).execute()
-    except Exception as e:
-        logger.error(f"Failed to record price history for competitor {competitor_id}: {e}")
+    # Store price history (with retries for transient DB failures)
+    db_persistence_error: Exception | None = None
+    max_db_retries = 3
+    price_data = {
+        "competitor_id": competitor_id,
+        "price": float(scrape_result.price) if scrape_result.price else None,
+        "currency": scrape_result.currency,
+        "scrape_status": scrape_result.status,
+        "error_message": scrape_result.error_message,
+    }
 
-    # Check for alerts if scrape was successful
+    for db_attempt in range(max_db_retries):
+        try:
+            sb.table("price_history").insert(price_data).execute()
+            db_persistence_error = None
+            break
+        except Exception as e:
+            db_persistence_error = e
+            logger.warning(
+                f"DB insert attempt {db_attempt + 1}/{max_db_retries} failed for competitor {competitor_id}: {e}"
+            )
+            if db_attempt < max_db_retries - 1:
+                await asyncio.sleep(min(0.05 * (2 ** db_attempt), 0.5))
+
+    if db_persistence_error:
+        logger.error(
+            f"Failed to record price history for competitor {competitor_id} after {max_db_retries} attempts: {db_persistence_error}"
+        )
+
+    # Check for alerts only if scrape was successful AND database persistence succeeded
     alert_result = None
-    if scrape_result.status == "success" and scrape_result.price:
+    if not db_persistence_error and scrape_result.status == "success" and scrape_result.price:
         try:
             alert_service = AlertService()
             alert_result = await alert_service.check_price_change_and_alert(
@@ -955,6 +977,20 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             )
         except Exception as e:
             logger.error(f"Alert evaluation failed for competitor {competitor_id}: {e}")
+
+    # If persistence failed, the competitor must not be reported as successfully completed
+    if db_persistence_error:
+        return {
+            "scrape_result": {
+                "status": "failed",
+                "price": float(scrape_result.price) if scrape_result.price else None,
+                "currency": scrape_result.currency,
+                "error": f"Failed to record price history: {str(db_persistence_error)[:150]}",
+                "failure_reason": ScrapeFailureReason.DATABASE_ERROR,
+                "retry_count": scrape_result.retry_count,
+            },
+            "alert_result": None,
+        }
 
     return {
         "scrape_result": {

@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from app.services.scraper_service import (
+    DatabasePersistenceError,
     FetchResult,
     ScrapeFailureReason,
     ScrapeResult,
@@ -726,3 +727,177 @@ async def test_scrape_and_check_alerts_competitor_not_found():
     assert result["scrape_result"]["status"] == "failed"
     assert result["scrape_result"]["error"] == "Competitor not found"
     assert result["alert_result"] is None
+
+
+@pytest.mark.asyncio
+async def test_price_history_persistence_failure_reports_failed_and_skips_alerts():
+    """When inserting into price_history fails, scrape_and_check_alerts reports failed and suppresses alerts."""
+    mock_db = MagicMock()
+    mock_comp = MagicMock()
+    mock_comp.select.return_value = mock_comp
+    mock_comp.eq.return_value = mock_comp
+    mock_comp.single.return_value = mock_comp
+    mock_comp.execute.return_value = MagicMock(data={"id": "comp-db-err", "url": "https://store.example.com/widget"})
+
+    # price_history insert always fails
+    mock_ph = MagicMock()
+    mock_ph.insert.return_value.execute.side_effect = RuntimeError("database connection terminated")
+
+    mock_db.table.side_effect = lambda name: mock_comp if name == "competitors" else mock_ph
+
+    success_scrape = ScrapeResult(
+        price=Decimal("49.99"),
+        currency="USD",
+        status="success",
+        retry_count=0,
+    )
+
+    mock_alert_service = MagicMock()
+    mock_alert_service.check_price_change_and_alert = AsyncMock()
+
+    with patch("app.db.database.get_supabase_client", return_value=mock_db), \
+         patch("app.services.scraper_service.scrape_url", AsyncMock(return_value=success_scrape)), \
+         patch("app.services.alert_service.AlertService", return_value=mock_alert_service):
+
+        result = await scrape_and_check_alerts("comp-db-err")
+
+    # 1. Affected competitor is NOT reported as successfully completed
+    assert result["scrape_result"]["status"] == "failed"
+    assert result["scrape_result"]["failure_reason"] == ScrapeFailureReason.DATABASE_ERROR
+    assert "Failed to record price history" in result["scrape_result"]["error"]
+
+    # 2. Alert evaluation did not run against unrecorded observation
+    assert result["alert_result"] is None
+    mock_alert_service.check_price_change_and_alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_transient_price_history_persistence_failure_recovers_and_evaluates_alerts():
+    """Transient DB error during price_history insert recovers on retry, succeeding and evaluating alerts."""
+    mock_db = MagicMock()
+    mock_comp = MagicMock()
+    mock_comp.select.return_value = mock_comp
+    mock_comp.eq.return_value = mock_comp
+    mock_comp.single.return_value = mock_comp
+    mock_comp.execute.return_value = MagicMock(data={"id": "comp-transient", "url": "https://store.example.com/widget"})
+
+    call_count = 0
+    def transient_insert(data):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("transient lock timeout")
+        return MagicMock(execute=MagicMock())
+
+    mock_ph = MagicMock()
+    mock_ph.insert.side_effect = transient_insert
+
+    mock_db.table.side_effect = lambda name: mock_comp if name == "competitors" else mock_ph
+
+    success_scrape = ScrapeResult(
+        price=Decimal("49.99"),
+        currency="USD",
+        status="success",
+        retry_count=0,
+    )
+
+    mock_alert_service = MagicMock()
+    mock_alert_service.check_price_change_and_alert = AsyncMock(return_value={"alert_created": True, "alert_type": "price_drop"})
+
+    with patch("app.db.database.get_supabase_client", return_value=mock_db), \
+         patch("app.services.scraper_service.scrape_url", AsyncMock(return_value=success_scrape)), \
+         patch("app.services.alert_service.AlertService", return_value=mock_alert_service):
+
+        result = await scrape_and_check_alerts("comp-transient")
+
+    assert call_count == 2
+    assert result["scrape_result"]["status"] == "success"
+    assert result["scrape_result"]["price"] == 49.99
+    assert result["alert_result"] == {"alert_created": True, "alert_type": "price_drop"}
+    mock_alert_service.check_price_change_and_alert.assert_called_once()
+
+
+def test_price_history_persistence_failure_in_manual_scrape_isolates_and_processes_subsequent():
+    """In scrape_product_manual, price_history insert failure on one competitor does not abort subsequent competitors."""
+    competitors = [
+        {"id": "comp-db-fail", "url": "https://fail-store.com/item", "retailer_name": "Failing DB Store"},
+        {"id": "comp-ok", "url": "https://ok-store.com/item", "retailer_name": "OK Store"},
+    ]
+
+    mock_db = MagicMock()
+    mock_comp_query = MagicMock()
+    mock_comp_query.select.return_value = mock_comp_query
+    mock_comp_query.eq.return_value = mock_comp_query
+    mock_comp_query.execute.return_value = MagicMock(data=competitors, count=2)
+
+    def ph_insert_router(data):
+        if data.get("competitor_id") == "comp-db-fail":
+            raise RuntimeError("Database connection failure during insert")
+        return MagicMock(execute=MagicMock())
+
+    mock_ph_query = MagicMock()
+    mock_ph_query.insert.side_effect = ph_insert_router
+
+    mock_db.table.side_effect = lambda name: mock_comp_query if name == "competitors" else mock_ph_query
+
+    async def fake_scrape_url(url, **kwargs):
+        if "fail-store" in url:
+            return ScrapeResult(price=Decimal("25.00"), currency="USD", status="success")
+        return ScrapeResult(price=Decimal("19.99"), currency="USD", status="success")
+
+    with patch("app.tasks.scraper_tasks.get_supabase_client", return_value=mock_db), \
+         patch("app.tasks.scraper_tasks.scrape_url", side_effect=fake_scrape_url), \
+         patch("app.tasks.scraper_tasks.set_scrape_progress"):
+
+        result = scrape_product_manual("product-123")
+
+    assert result["status"] == "completed"
+    results = result["results"]
+    assert len(results) == 2
+
+    # Competitor 1 failed because persistence failed (not reported as success)
+    assert results[0]["competitor_id"] == "comp-db-fail"
+    assert results[0]["status"] == "failed"
+    assert results[0]["failure_reason"] == ScrapeFailureReason.DATABASE_ERROR
+    assert "record price history" in results[0]["error_message"].lower()
+
+    # Competitor 2 succeeded (subsequent competitor was not aborted)
+    assert results[1]["competitor_id"] == "comp-ok"
+    assert results[1]["status"] == "success"
+    assert results[1]["price"] == "19.99"
+
+
+def test_celery_scrape_single_competitor_retry_path_on_persistence_failure():
+    """scrape_single_competitor triggers retry path when run inside Celery on database failure."""
+    from celery.exceptions import Retry
+
+    failed_result = {
+        "scrape_result": {
+            "status": "failed",
+            "price": None,
+            "currency": "USD",
+            "error": "Failed to record price history: DB timeout",
+            "failure_reason": ScrapeFailureReason.DATABASE_ERROR,
+            "retry_count": 0,
+        },
+        "alert_result": None,
+    }
+
+    mock_client = MagicMock()
+
+    with patch("app.tasks.scraper_tasks.get_supabase_client", return_value=mock_client), \
+         patch("app.tasks.scraper_tasks._was_scraped_today", return_value=False), \
+         patch("app.tasks.scraper_tasks.scrape_and_check_alerts", AsyncMock(return_value=failed_result)):
+
+        # In Celery context: DatabasePersistenceError triggers Celery autoretry (Retry exception)
+        scrape_single_competitor.push_request(id="celery-task-42", retries=0)
+        try:
+            with pytest.raises((DatabasePersistenceError, Retry)):
+                scrape_single_competitor("comp-1")
+        finally:
+            scrape_single_competitor.pop_request()
+
+        # Without Celery request context: returns failed result dict without raising
+        res = scrape_single_competitor("comp-1")
+        assert res["scrape_status"] == "failed"
+        assert res["failure_reason"] == ScrapeFailureReason.DATABASE_ERROR

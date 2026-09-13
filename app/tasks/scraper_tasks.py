@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -9,6 +10,7 @@ import redis
 from app.tasks.celery_app import celery_app
 from app.db.database import get_supabase_client
 from app.services.scraper_service import (
+    DatabasePersistenceError,
     classify_scrape_exception,
     scrape_and_check_alerts,
     scrape_url,
@@ -160,28 +162,51 @@ def scrape_product_manual(self, product_id: str) -> dict:
             scrape_result = asyncio.run(scrape_url(url))
 
             # Store in price_history (isolated from aborting scrape run)
-            try:
-                price_data = {
-                    "competitor_id": competitor_id,
-                    "price": float(scrape_result.price) if scrape_result.price else None,
-                    "currency": scrape_result.currency,
-                    "scrape_status": scrape_result.status,
-                    "error_message": scrape_result.error_message,
-                }
-                client.table("price_history").insert(price_data).execute()
-            except Exception as db_exc:
-                logger.error(f"Failed to persist price_history for competitor {competitor_id}: {db_exc}")
-
-            result = {
+            db_error = None
+            max_db_retries = 3
+            price_data = {
                 "competitor_id": competitor_id,
-                "retailer": retailer,
-                "price": str(scrape_result.price) if scrape_result.price else None,
+                "price": float(scrape_result.price) if scrape_result.price else None,
                 "currency": scrape_result.currency,
-                "status": scrape_result.status,
+                "scrape_status": scrape_result.status,
                 "error_message": scrape_result.error_message,
-                "failure_reason": scrape_result.failure_reason,
-                "retry_count": scrape_result.retry_count,
             }
+            for db_attempt in range(max_db_retries):
+                try:
+                    client.table("price_history").insert(price_data).execute()
+                    db_error = None
+                    break
+                except Exception as db_exc:
+                    db_error = db_exc
+                    logger.warning(
+                        f"Failed to persist price_history (attempt {db_attempt + 1}/{max_db_retries}) for competitor {competitor_id}: {db_exc}"
+                    )
+                    if db_attempt < max_db_retries - 1:
+                        time.sleep(min(0.05 * (2 ** db_attempt), 0.5))
+
+            if db_error:
+                logger.error(f"Failed to persist price_history for competitor {competitor_id}: {db_error}")
+                result = {
+                    "competitor_id": competitor_id,
+                    "retailer": retailer,
+                    "price": None,
+                    "currency": scrape_result.currency,
+                    "status": "failed",
+                    "error_message": f"Failed to record price history: {str(db_error)[:150]}",
+                    "failure_reason": ScrapeFailureReason.DATABASE_ERROR,
+                    "retry_count": scrape_result.retry_count,
+                }
+            else:
+                result = {
+                    "competitor_id": competitor_id,
+                    "retailer": retailer,
+                    "price": str(scrape_result.price) if scrape_result.price else None,
+                    "currency": scrape_result.currency,
+                    "status": scrape_result.status,
+                    "error_message": scrape_result.error_message,
+                    "failure_reason": scrape_result.failure_reason,
+                    "retry_count": scrape_result.retry_count,
+                }
 
         except Exception as e:
             logger.error(f"Error scraping competitor {competitor_id} ({url}): {str(e)}")
@@ -280,6 +305,12 @@ def scrape_single_competitor(self, competitor_id: str) -> dict:
             f"Alert created for {competitor_id}: {alert_result.get('alert_type')} "
             f"({alert_result.get('change_percent')}%)"
         )
+
+    if scrape_result.get("failure_reason") == ScrapeFailureReason.DATABASE_ERROR:
+        if getattr(self, "request", None) and getattr(self.request, "id", None):
+            raise DatabasePersistenceError(
+                scrape_result.get("error") or f"Database persistence failed for competitor {competitor_id}"
+            )
 
     return {
         "competitor_id": competitor_id,
