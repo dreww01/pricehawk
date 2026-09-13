@@ -25,6 +25,7 @@ _deleting_users: set[str] = set()
 _deleted_products: set[str] = set()
 _active_tasks_by_user: dict[str, set[str]] = defaultdict(set)
 _active_tasks_by_product: dict[str, set[str]] = defaultdict(set)
+_active_tasks_by_competitor: dict[str, set[str]] = defaultdict(set)
 
 DELETION_TTL_SECONDS = 86400  # 24 hours retention for deletion markers in Redis
 DELETING_IN_PROGRESS_TTL_SECONDS = 300  # 5 minutes transient retention for in-flight deletion
@@ -39,11 +40,16 @@ def _get_redis_conn() -> Optional[Any]:
         return None
 
 
-def register_active_scrape_task(user_id: str, product_id: str, task_id: str) -> None:
+def register_active_scrape_task(
+    user_id: str | None = None,
+    product_id: str | None = None,
+    task_id: str = "",
+    competitor_id: str | None = None,
+) -> None:
     """
     Register an active background scrape task to enable revocation upon account deletion.
 
-    Records the association in Redis when available, maintaining an in-memory fallback.
+    Records the association across user, product, and competitor in Redis and memory.
     """
     if not task_id:
         return
@@ -53,6 +59,8 @@ def register_active_scrape_task(user_id: str, product_id: str, task_id: str) -> 
             _active_tasks_by_user[user_id].add(task_id)
         if product_id:
             _active_tasks_by_product[product_id].add(task_id)
+        if competitor_id:
+            _active_tasks_by_competitor[competitor_id].add(task_id)
 
     redis_conn = _get_redis_conn()
     if redis_conn:
@@ -65,8 +73,51 @@ def register_active_scrape_task(user_id: str, product_id: str, task_id: str) -> 
                 prod_key = f"active_tasks:product:{product_id}"
                 redis_conn.sadd(prod_key, task_id)
                 redis_conn.expire(prod_key, 3600)
+            if competitor_id:
+                comp_key = f"active_tasks:competitor:{competitor_id}"
+                redis_conn.sadd(comp_key, task_id)
+                redis_conn.expire(comp_key, 3600)
         except Exception as exc:
             logger.debug(f"Failed to register task {task_id} in Redis: {exc}")
+
+
+def unregister_active_scrape_task(
+    task_id: str,
+    user_id: str | None = None,
+    product_id: str | None = None,
+    competitor_id: str | None = None,
+) -> None:
+    """
+    Unregister a completed or aborted background scrape task to keep active task sets clean.
+    """
+    if not task_id:
+        return
+
+    with _account_lock:
+        if user_id and user_id in _active_tasks_by_user:
+            _active_tasks_by_user[user_id].discard(task_id)
+            if not _active_tasks_by_user[user_id]:
+                del _active_tasks_by_user[user_id]
+        if product_id and product_id in _active_tasks_by_product:
+            _active_tasks_by_product[product_id].discard(task_id)
+            if not _active_tasks_by_product[product_id]:
+                del _active_tasks_by_product[product_id]
+        if competitor_id and competitor_id in _active_tasks_by_competitor:
+            _active_tasks_by_competitor[competitor_id].discard(task_id)
+            if not _active_tasks_by_competitor[competitor_id]:
+                del _active_tasks_by_competitor[competitor_id]
+
+    redis_conn = _get_redis_conn()
+    if redis_conn:
+        try:
+            if user_id:
+                redis_conn.srem(f"active_tasks:user:{user_id}", task_id)
+            if product_id:
+                redis_conn.srem(f"active_tasks:product:{product_id}", task_id)
+            if competitor_id:
+                redis_conn.srem(f"active_tasks:competitor:{competitor_id}", task_id)
+        except Exception as exc:
+            logger.debug(f"Failed to unregister task {task_id} in Redis: {exc}")
 
 
 def mark_deletion_in_progress(user_id: str) -> None:
@@ -246,6 +297,7 @@ def cancel_tasks_for_user(
     - Returns the list of revoked task IDs
     """
     product_ids = product_ids or []
+    competitor_ids = competitor_ids or []
     mark_deletion_in_progress(user_id)
     for pid in product_ids:
         mark_product_deleted(pid)
@@ -259,6 +311,9 @@ def cancel_tasks_for_user(
         for pid in product_ids:
             if pid in _active_tasks_by_product:
                 task_ids.update(_active_tasks_by_product.pop(pid, set()))
+        for cid in competitor_ids:
+            if cid in _active_tasks_by_competitor:
+                task_ids.update(_active_tasks_by_competitor.pop(cid, set()))
 
     # 2. Collect Redis tracked tasks
     redis_conn = _get_redis_conn()
@@ -276,6 +331,13 @@ def cancel_tasks_for_user(
                 if ptasks:
                     task_ids.update(t if isinstance(t, str) else t.decode("utf-8") for t in ptasks)
                 redis_conn.delete(prod_key)
+
+            for cid in competitor_ids:
+                comp_key = f"active_tasks:competitor:{cid}"
+                ctasks = redis_conn.smembers(comp_key)
+                if ctasks:
+                    task_ids.update(t if isinstance(t, str) else t.decode("utf-8") for t in ctasks)
+                redis_conn.delete(comp_key)
         except Exception as exc:
             logger.debug(f"Error fetching active tasks from Redis for user {user_id}: {exc}")
 
@@ -537,3 +599,4 @@ def clear_account_deletion_state() -> None:
         _deleted_products.clear()
         _active_tasks_by_user.clear()
         _active_tasks_by_product.clear()
+        _active_tasks_by_competitor.clear()

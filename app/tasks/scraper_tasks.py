@@ -19,6 +19,12 @@ from app.services.scraper_service import (
 from app.services.alert_service import AlertService
 from app.services.digest_service import DigestService
 from app.core.config import get_settings
+from app.services.account_service import (
+    is_product_deleted,
+    is_user_deleted,
+    register_active_scrape_task,
+    unregister_active_scrape_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -347,19 +353,29 @@ def scrape_single_competitor(self, competitor_id: str) -> dict:
     This replaces the old scrape_single_competitor function.
     Now uses scrape_and_check_alerts which handles both scraping and alert detection.
     """
-    from app.services.account_service import is_product_deleted, is_user_deleted
+    from app.services.account_service import (
+        is_product_deleted,
+        is_user_deleted,
+        unregister_active_scrape_task,
+    )
 
     client = get_supabase_client()
+    task_id = getattr(getattr(self, "request", None), "id", None)
+    pid = None
+    uid = None
 
-    # Guard: verify competitor and parent product are not deleted or inactive
     try:
-        comp_res = (
-            client.table("competitors")
-            .select("id, product_id, products(id, user_id, is_active)")
-            .eq("id", competitor_id)
-            .execute()
-        )
-        if comp_res and isinstance(comp_res.data, list) and len(comp_res.data) > 0:
+        # Guard: verify competitor and parent product are not deleted or inactive
+        try:
+            comp_res = (
+                client.table("competitors")
+                .select("id, product_id, products(id, user_id, is_active)")
+                .eq("id", competitor_id)
+                .execute()
+            )
+            if not comp_res or not comp_res.data:
+                return {"status": "cancelled", "reason": "competitor_deleted_or_not_found"}
+
             comp_rec = comp_res.data[0]
             if isinstance(comp_rec, dict):
                 pid = comp_rec.get("product_id")
@@ -372,46 +388,57 @@ def scrape_single_competitor(self, competitor_id: str) -> dict:
                     uid = prod_data.get("user_id")
                     if uid and is_user_deleted(uid):
                         return {"status": "cancelled", "reason": "user_deleted"}
-    except Exception as exc:
-        logger.debug(f"Competitor active check failed for {competitor_id}: {exc}")
+        except Exception as exc:
+            logger.debug(f"Competitor active check failed for {competitor_id}: {exc}")
 
-    if _was_scraped_today(client, competitor_id):
-        logger.info(f"Competitor {competitor_id} already scraped today, skipping")
-        return {"status": "skipped", "reason": "already_scraped_today"}
+        if _was_scraped_today(client, competitor_id):
+            logger.info(f"Competitor {competitor_id} already scraped today, skipping")
+            return {"status": "skipped", "reason": "already_scraped_today"}
 
-    # Use new function that combines scraping + alert detection
-    result = asyncio.run(scrape_and_check_alerts(competitor_id))
+        # Use new function that combines scraping + alert detection
+        result = asyncio.run(scrape_and_check_alerts(competitor_id))
 
-    scrape_result = result.get("scrape_result", {})
-    alert_result = result.get("alert_result")
+        scrape_result = result.get("scrape_result", {})
+        alert_result = result.get("alert_result")
 
-    logger.info(
-        f"Scraped {competitor_id}: {scrape_result.get('status')} - "
-        f"{scrape_result.get('price')} {scrape_result.get('currency')}"
-    )
-
-    if alert_result and alert_result.get("alert_created"):
         logger.info(
-            f"Alert created for {competitor_id}: {alert_result.get('alert_type')} "
-            f"({alert_result.get('change_percent')}%)"
+            f"Scraped {competitor_id}: {scrape_result.get('status')} - "
+            f"{scrape_result.get('price')} {scrape_result.get('currency')}"
         )
 
-    if scrape_result.get("failure_reason") == ScrapeFailureReason.DATABASE_ERROR:
-        if getattr(self, "request", None) and getattr(self.request, "id", None):
-            raise DatabasePersistenceError(
-                scrape_result.get("error") or f"Database persistence failed for competitor {competitor_id}"
+        if alert_result and alert_result.get("alert_created"):
+            logger.info(
+                f"Alert created for {competitor_id}: {alert_result.get('alert_type')} "
+                f"({alert_result.get('change_percent')}%)"
             )
 
-    return {
-        "competitor_id": competitor_id,
-        "scrape_status": scrape_result.get("status"),
-        "price": scrape_result.get("price"),
-        "currency": scrape_result.get("currency"),
-        "error_message": scrape_result.get("error"),
-        "failure_reason": scrape_result.get("failure_reason"),
-        "retry_count": scrape_result.get("retry_count", 0),
-        "alert_created": alert_result.get("alert_created", False) if alert_result else False
-    }
+        if scrape_result.get("failure_reason") == ScrapeFailureReason.DATABASE_ERROR:
+            if getattr(self, "request", None) and getattr(self.request, "id", None):
+                raise DatabasePersistenceError(
+                    scrape_result.get("error") or f"Database persistence failed for competitor {competitor_id}"
+                )
+
+        return {
+            "competitor_id": competitor_id,
+            "scrape_status": scrape_result.get("status"),
+            "price": scrape_result.get("price"),
+            "currency": scrape_result.get("currency"),
+            "error_message": scrape_result.get("error"),
+            "failure_reason": scrape_result.get("failure_reason"),
+            "retry_count": scrape_result.get("retry_count", 0),
+            "alert_created": alert_result.get("alert_created", False) if alert_result else False
+        }
+    finally:
+        if task_id:
+            try:
+                unregister_active_scrape_task(
+                    task_id=task_id,
+                    user_id=uid,
+                    product_id=pid,
+                    competitor_id=competitor_id,
+                )
+            except Exception as unreg_exc:
+                logger.debug(f"Failed to unregister completed task {task_id}: {unreg_exc}")
 
 
 @celery_app.task(bind=True)
@@ -427,7 +454,7 @@ def scrape_all_products(self) -> dict:
     # Get all active products
     products_result = (
         client.table("products")
-        .select("id")
+        .select("id, user_id")
         .eq("is_active", True)
         .execute()
     )
@@ -436,12 +463,17 @@ def scrape_all_products(self) -> dict:
         logger.info("No active products to scrape")
         return {"total": 0, "queued": 0}
 
-    product_ids = [p["id"] for p in products_result.data]
+    product_to_user = {
+        p["id"]: p.get("user_id")
+        for p in products_result.data
+        if isinstance(p, dict) and "id" in p
+    }
+    product_ids = list(product_to_user.keys())
 
     # Get all competitors for active products
     competitors_result = (
         client.table("competitors")
-        .select("id")
+        .select("id, product_id")
         .in_("product_id", product_ids)
         .execute()
     )
@@ -456,7 +488,18 @@ def scrape_all_products(self) -> dict:
     for i in range(0, total, BATCH_SIZE):
         batch = competitors[i:i + BATCH_SIZE]
         for competitor in batch:
-            scrape_single_competitor.delay(competitor["id"])
+            comp_id = competitor["id"]
+            prod_id = competitor.get("product_id")
+            user_id = product_to_user.get(prod_id)
+
+            task = scrape_single_competitor.delay(comp_id)
+            if task and getattr(task, "id", None):
+                register_active_scrape_task(
+                    user_id=user_id,
+                    product_id=prod_id,
+                    task_id=task.id,
+                    competitor_id=comp_id,
+                )
             queued += 1
 
         logger.info(f"Queued batch {i // BATCH_SIZE + 1}: {len(batch)} competitors")

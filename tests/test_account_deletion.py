@@ -21,8 +21,9 @@ from app.services.account_service import (
     mark_product_deleted,
     mark_user_deleted,
     register_active_scrape_task,
+    unregister_active_scrape_task,
 )
-from app.tasks.scraper_tasks import scrape_product_manual, scrape_single_competitor
+from app.tasks.scraper_tasks import scrape_all_products, scrape_product_manual, scrape_single_competitor
 from main import app
 
 
@@ -75,6 +76,24 @@ class MockTableQuery:
 
     def in_(self, column, values):
         self._in_filters[column] = list(values)
+        return self
+
+    def gte(self, column, value):
+        return self
+
+    def lte(self, column, value):
+        return self
+
+    def gt(self, column, value):
+        return self
+
+    def lt(self, column, value):
+        return self
+
+    def order(self, *args, **kwargs):
+        return self
+
+    def limit(self, *args, **kwargs):
         return self
 
     def execute(self):
@@ -928,4 +947,119 @@ def test_deletion_fails_on_user_table_cleanup_and_allows_safe_retry(client: Test
         assert len(db.tables["products"]) == 0
         assert is_user_deleted(user_id)
         assert is_session_revoked(user_id)
+
+
+# ============================================================================
+# 7. Scheduled Task Tracking, Revocation & Cleanup Tests (REV-03)
+# ============================================================================
+
+def test_scrape_all_products_tracks_scheduled_tasks_with_associations():
+    """
+    REV-03: scrape_all_products must associate queued scrape_single_competitor
+    task IDs with owning user, product, and competitor in task registration.
+    """
+    db = MockSupabaseDB()
+    user_id = "user-sched-owner-1"
+    prod_id = "prod-sched-1"
+    comp_id = "comp-sched-1"
+
+    db.tables["products"] = [{"id": prod_id, "user_id": user_id, "is_active": True}]
+    db.tables["competitors"] = [{"id": comp_id, "product_id": prod_id, "url": "https://sched.com/item"}]
+
+    mock_task = MagicMock()
+    mock_task.id = "scheduled-celery-task-999"
+
+    with patch("app.tasks.scraper_tasks.get_supabase_client", return_value=db), \
+         patch("app.tasks.scraper_tasks.scrape_single_competitor.delay", return_value=mock_task), \
+         patch("app.tasks.scraper_tasks.register_active_scrape_task") as mock_reg:
+
+        result = scrape_all_products()
+
+        assert result["total"] == 1
+        assert result["queued"] == 1
+        mock_reg.assert_called_once_with(
+            user_id=user_id,
+            product_id=prod_id,
+            task_id=mock_task.id,
+            competitor_id=comp_id,
+        )
+
+
+def test_scheduled_competitor_task_revoked_on_account_deletion_and_prevents_scrape():
+    """
+    REV-03: Integration test covering a queued or active scrape_single_competitor task.
+    Verifies that deleting the owner revokes the task and prevents further external
+    scraping or persistence.
+    """
+    user_id = "user-sched-del-1"
+    email = "scheddel@example.com"
+    prod_id = "prod-sched-del-1"
+    comp_id = "comp-sched-del-1"
+    task_id = "celery-sched-task-456"
+
+    db = MockSupabaseDB()
+    db.tables["products"] = [{"id": prod_id, "user_id": user_id, "product_name": "Sched Product", "is_active": True}]
+    db.tables["competitors"] = [{"id": comp_id, "product_id": prod_id, "url": "https://sched-target.com/p"}]
+    db.tables["price_history"] = []
+
+    # 1. Scheduled task is queued and registered under user, product, and competitor
+    register_active_scrape_task(
+        user_id=user_id,
+        product_id=prod_id,
+        task_id=task_id,
+        competitor_id=comp_id,
+    )
+
+    mock_scrape = AsyncMock()
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db), \
+         patch("app.tasks.scraper_tasks.get_supabase_client", return_value=db), \
+         patch("app.services.scraper_service.scrape_url", mock_scrape), \
+         patch("app.tasks.celery_app.celery_app.control.revoke") as mock_revoke:
+
+        # 2. Deleting the owner account triggers cancellation and revocation
+        summary = delete_user_account(user_id, client=db)
+
+        # Celery control broadcast must have revoked the scheduled task
+        mock_revoke.assert_called_with(task_id, terminate=True)
+        assert task_id in [t for t in summary.get("tables_cleaned", []) or []] or summary["tasks_revoked"] >= 1
+
+        # 3. Simulate Celery worker attempting to execute the revoked task
+        task_result = scrape_single_competitor(comp_id)
+
+        # 4. Guarantee: Task is cancelled, no external network scrape, no persistence
+        assert task_result["status"] == "cancelled"
+        mock_scrape.assert_not_called()
+        assert len(db.tables["price_history"]) == 0
+
+
+def test_task_registration_and_cleanup_lifecycle():
+    """
+    REV-03: Verifies that completed tasks unregister properly to keep active task tracking clean.
+    """
+    user_id = "user-lifecycle-1"
+    prod_id = "prod-lifecycle-1"
+    comp_id = "comp-lifecycle-1"
+    task_id = "lifecycle-task-001"
+
+    register_active_scrape_task(
+        user_id=user_id,
+        product_id=prod_id,
+        task_id=task_id,
+        competitor_id=comp_id,
+    )
+
+    # Cancel should find it before unregistration
+    # Unregister completes
+    unregister_active_scrape_task(
+        task_id=task_id,
+        user_id=user_id,
+        product_id=prod_id,
+        competitor_id=comp_id,
+    )
+
+    # Subsequent cancellation should find nothing for this task
+    revoked = cancel_tasks_for_user(user_id=user_id, product_ids=[prod_id], competitor_ids=[comp_id])
+    assert task_id not in revoked
 
