@@ -1,0 +1,627 @@
+"""
+Integration and regression tests for user account deletion cleanup,
+cascading guarantees, background task cancellation, and session invalidation.
+"""
+
+from decimal import Decimal
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import jwt
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import get_settings
+from app.core.security import is_session_revoked, revoke_user_sessions
+from app.services.account_service import (
+    cancel_tasks_for_user,
+    delete_user_account,
+    is_product_deleted,
+    is_user_deleted,
+    mark_product_deleted,
+    mark_user_deleted,
+    register_active_scrape_task,
+)
+from app.tasks.scraper_tasks import scrape_product_manual, scrape_single_competitor
+from main import app
+
+
+def _create_token(user_id: str = "user-del-test-123", email: str = "deltest@example.com") -> str:
+    settings = get_settings()
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "role": "authenticated",
+        "aud": "authenticated",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    return jwt.encode(payload, settings.sb_jwt_secret, algorithm="HS256")
+
+
+class MockTableQuery:
+    """Mock for chained Supabase table queries."""
+
+    def __init__(self, table_name: str, parent_db: "MockSupabaseDB"):
+        self.table_name = table_name
+        self.parent_db = parent_db
+        self._action = "select"
+        self._filters: dict = {}
+        self._in_filters: dict = {}
+        self._update_data = None
+
+    def select(self, *args, **kwargs):
+        self._action = "select"
+        return self
+
+    def insert(self, data, *args, **kwargs):
+        self._action = "insert"
+        self._insert_data = data
+        return self
+
+    def update(self, data, *args, **kwargs):
+        self._action = "update"
+        self._update_data = data
+        return self
+
+    def delete(self, *args, **kwargs):
+        self._action = "delete"
+        return self
+
+    def eq(self, column, value):
+        self._filters[column] = value
+        return self
+
+    def in_(self, column, values):
+        self._in_filters[column] = list(values)
+        return self
+
+    def execute(self):
+        return self.parent_db._execute_table(self)
+
+
+class MockSupabaseDB:
+    """Simulated in-memory Supabase storage with table-level tracking."""
+
+    def __init__(self):
+        self.tables = {
+            "products": [],
+            "competitors": [],
+            "price_history": [],
+            "insights": [],
+            "tracking_jobs": [],
+            "pending_alerts": [],
+            "user_alert_settings": [],
+            "alert_history": [],
+        }
+        self.auth_users = {}
+        self.deleted_counts = {k: 0 for k in self.tables}
+        self.deleted_counts["auth.users"] = 0
+        self.auth_admin_deleted = []
+
+        # Setup mock auth admin
+        self.auth = MagicMock()
+        self.auth.admin = MagicMock()
+        self.auth.admin.delete_user.side_effect = self._admin_delete_user
+
+    def _admin_delete_user(self, user_id: str):
+        self.auth_admin_deleted.append(user_id)
+        self.deleted_counts["auth.users"] += 1
+        if user_id in self.auth_users:
+            del self.auth_users[user_id]
+        return {"message": "User deleted"}
+
+    def table(self, table_name: str) -> MockTableQuery:
+        return MockTableQuery(table_name, self)
+
+    def _execute_table(self, query: MockTableQuery):
+        table_rows = self.tables.get(query.table_name, [])
+
+        if query._action == "select":
+            filtered = []
+            for row in table_rows:
+                match = True
+                for k, v in query._filters.items():
+                    if row.get(k) != v:
+                        match = False
+                        break
+                for k, vals in query._in_filters.items():
+                    if row.get(k) not in vals:
+                        match = False
+                        break
+                if match:
+                    filtered.append(row)
+            return MagicMock(data=filtered, count=len(filtered))
+
+        elif query._action == "delete":
+            remaining = []
+            deleted_count = 0
+            for row in table_rows:
+                should_delete = True
+                for k, v in query._filters.items():
+                    if row.get(k) != v:
+                        should_delete = False
+                        break
+                for k, vals in query._in_filters.items():
+                    if row.get(k) not in vals:
+                        should_delete = False
+                        break
+                if should_delete:
+                    deleted_count += 1
+                else:
+                    remaining.append(row)
+
+            self.tables[query.table_name] = remaining
+            self.deleted_counts[query.table_name] += deleted_count
+            return MagicMock(data=[{"id": "del"}] * deleted_count, count=deleted_count)
+
+        elif query._action == "update":
+            return MagicMock(data=[], count=0)
+
+        return MagicMock(data=[], count=0)
+
+
+# ============================================================================
+# 1. Comprehensive Storage Cleanup Integration Tests
+# ============================================================================
+
+def test_account_deletion_end_to_end_cleans_all_storage_tables(client: TestClient):
+    """
+    Integration test: DELETE /api/account/delete thoroughly purges all records
+    across products, competitors, price history, insights, tracking jobs,
+    alerts, alert history, delivery credentials (webhook settings), and auth user.
+    """
+    user_id = "user-delete-all-999"
+    email = "deleteall@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+
+    # Seed all tables for this user
+    prod1 = "prod-del-1"
+    prod2 = "prod-del-2"
+    comp1 = "comp-del-1"
+    comp2 = "comp-del-2"
+
+    db.tables["products"] = [
+        {"id": prod1, "user_id": user_id, "product_name": "Product 1", "is_active": True},
+        {"id": prod2, "user_id": user_id, "product_name": "Product 2", "is_active": True},
+        {"id": "prod-other", "user_id": "other-user", "product_name": "Other", "is_active": True},
+    ]
+    db.tables["competitors"] = [
+        {"id": comp1, "product_id": prod1, "url": "https://store.com/item1"},
+        {"id": comp2, "product_id": prod2, "url": "https://store.com/item2"},
+        {"id": "comp-other", "product_id": "prod-other", "url": "https://store.com/other"},
+    ]
+    db.tables["price_history"] = [
+        {"id": "ph-1", "competitor_id": comp1, "price": Decimal("29.99"), "scrape_status": "success"},
+        {"id": "ph-2", "competitor_id": comp2, "price": Decimal("49.99"), "scrape_status": "success"},
+        {"id": "ph-other", "competitor_id": "comp-other", "price": Decimal("99.99"), "scrape_status": "success"},
+    ]
+    db.tables["insights"] = [
+        {"id": "ins-1", "product_id": prod1, "insight_text": "Price dropped"},
+        {"id": "ins-other", "product_id": "prod-other", "insight_text": "Normal trend"},
+    ]
+    db.tables["tracking_jobs"] = [
+        {"id": "job-1", "user_id": user_id, "status": "processing", "total_items": 5},
+        {"id": "job-other", "user_id": "other-user", "status": "completed", "total_items": 2},
+    ]
+    db.tables["pending_alerts"] = [
+        {"id": "alert-1", "user_id": user_id, "product_id": prod1, "competitor_id": comp1},
+        {"id": "alert-other", "user_id": "other-user", "product_id": "prod-other", "competitor_id": "comp-other"},
+    ]
+    db.tables["user_alert_settings"] = [
+        {
+            "id": "settings-1",
+            "user_id": user_id,
+            "webhook_enabled": True,
+            "webhook_url": "https://mywebhook.com/alerts",
+            "webhook_secret": "super-secret-key-123456",
+            "email_enabled": True,
+        },
+        {
+            "id": "settings-other",
+            "user_id": "other-user",
+            "webhook_enabled": True,
+            "webhook_url": "https://other.com/hook",
+            "webhook_secret": "other-secret-key-123456",
+        },
+    ]
+    db.tables["alert_history"] = [
+        {"id": "hist-1", "user_id": user_id, "alerts_count": 3, "email_status": "sent"},
+        {"id": "hist-other", "user_id": "other-user", "alerts_count": 1, "email_status": "sent"},
+    ]
+    db.auth_users[user_id] = {"id": user_id, "email": email}
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        response = client.delete(
+            "/api/account/delete",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "Account data deleted successfully" in data["message"]
+
+        # Cookie invalidation guarantee: response includes Set-Cookie clearing access_token
+        set_cookie = response.headers.get("set-cookie", "")
+        assert "access_token" in set_cookie
+        assert 'max-age=0' in set_cookie.lower() or 'expires=' in set_cookie.lower()
+
+        # Storage cleanup guarantees: verify user's records were completely removed
+        assert len(db.tables["products"]) == 1
+        assert db.tables["products"][0]["user_id"] == "other-user"
+
+        assert len(db.tables["competitors"]) == 1
+        assert db.tables["competitors"][0]["id"] == "comp-other"
+
+        assert len(db.tables["price_history"]) == 1
+        assert db.tables["price_history"][0]["id"] == "ph-other"
+
+        assert len(db.tables["insights"]) == 1
+        assert db.tables["insights"][0]["id"] == "ins-other"
+
+        assert len(db.tables["tracking_jobs"]) == 1
+        assert db.tables["tracking_jobs"][0]["user_id"] == "other-user"
+
+        assert len(db.tables["pending_alerts"]) == 1
+        assert db.tables["pending_alerts"][0]["user_id"] == "other-user"
+
+        # Notification credentials (webhook_url, webhook_secret) purged
+        assert len(db.tables["user_alert_settings"]) == 1
+        assert db.tables["user_alert_settings"][0]["user_id"] == "other-user"
+
+        assert len(db.tables["alert_history"]) == 1
+        assert db.tables["alert_history"][0]["user_id"] == "other-user"
+
+        # Auth admin user deletion invoked
+        assert user_id in db.auth_admin_deleted
+
+
+# ============================================================================
+# 2. Session and Cookie Invalidation Guarantees
+# ============================================================================
+
+def test_session_and_token_invalidated_immediately_after_deletion(client: TestClient):
+    """
+    Guarantee: After account deletion, the issued Bearer token and any ambient cookie
+    are immediately rejected on subsequent requests with HTTP 401 Unauthorized.
+    """
+    user_id = "user-session-inval-456"
+    email = "sessioninval@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        # Pre-deletion: user can access /api/auth/me
+        pre_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert pre_resp.status_code == 200
+        assert pre_resp.json()["id"] == user_id
+
+        # Execute deletion
+        del_resp = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert del_resp.status_code == 200
+
+        # Post-deletion 1: Immediate call to /api/auth/me with Bearer token is rejected with 401
+        post_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert post_resp.status_code == 401
+        assert "Session invalidated or account deleted" in post_resp.json()["detail"]
+
+        # Post-deletion 2: Account settings endpoint also rejects the revoked session
+        settings_resp = client.get("/api/account/settings", headers={"Authorization": f"Bearer {token}"})
+        assert settings_resp.status_code == 401
+        assert "Session invalidated or account deleted" in settings_resp.json()["detail"]
+
+        # Post-deletion 3: Cookie-based request to protected dashboard redirects to login
+        page_resp = client.get("/dashboard", cookies={"access_token": token}, follow_redirects=False)
+        assert page_resp.status_code == 303
+        assert "/login" in page_resp.headers["location"]
+
+
+# ============================================================================
+# 3. Background Task Cancellation & Orphaned Scraper Prevention
+# ============================================================================
+
+def test_scrape_product_manual_aborts_immediately_if_account_deleted():
+    """
+    Guarantee: A manual scrape task does not scrape any competitor URLs if the
+    product or account is marked deleted.
+    """
+    user_id = "user-task-abort-1"
+    product_id = "prod-task-abort-1"
+
+    # Mark user deleted
+    mark_user_deleted(user_id)
+    mark_product_deleted(product_id)
+
+    mock_scrape = AsyncMock()
+
+    with patch("app.tasks.scraper_tasks.scrape_url", mock_scrape), \
+         patch("app.tasks.scraper_tasks.set_scrape_progress") as mock_progress:
+
+        result = scrape_product_manual(product_id)
+
+        assert result["status"] == "cancelled"
+        # Guarantee: No external scrape requests were made
+        mock_scrape.assert_not_called()
+        mock_progress.assert_called()
+
+
+def test_scrape_product_manual_cancels_mid_run_when_deletion_occurs():
+    """
+    Guarantee: If an account is deleted while a multi-competitor scrape is running,
+    the loop halts immediately and does not process remaining competitors.
+    """
+    user_id = "user-midrun-cancel"
+    product_id = "prod-midrun-cancel"
+
+    competitors = [
+        {"id": "comp-1", "url": "https://store.com/1", "retailer_name": "Store 1"},
+        {"id": "comp-2", "url": "https://store.com/2", "retailer_name": "Store 2"},
+        {"id": "comp-3", "url": "https://store.com/3", "retailer_name": "Store 3"},
+    ]
+
+    mock_db = MagicMock()
+    # Mock product select
+    mock_prod_q = MagicMock()
+    mock_prod_q.select.return_value = mock_prod_q
+    mock_prod_q.eq.return_value = mock_prod_q
+    mock_prod_q.execute.return_value = MagicMock(data=[{"id": product_id, "user_id": user_id, "is_active": True}])
+
+    # Mock competitors select
+    mock_comp_q = MagicMock()
+    mock_comp_q.select.return_value = mock_comp_q
+    mock_comp_q.eq.return_value = mock_comp_q
+    mock_comp_q.execute.return_value = MagicMock(data=competitors)
+
+    # Mock price history insert
+    mock_ph_q = MagicMock()
+    mock_ph_q.insert.return_value = mock_ph_q
+    mock_ph_q.execute.return_value = MagicMock()
+
+    def mock_table(name):
+        if name == "products":
+            return mock_prod_q
+        elif name == "competitors":
+            return mock_comp_q
+        return mock_ph_q
+
+    mock_db.table.side_effect = mock_table
+
+    scraped_urls = []
+    async def mock_scrape(url):
+        scraped_urls.append(url)
+        # Simulate user deleting account after the first competitor is scraped
+        mark_user_deleted(user_id)
+        return MagicMock(price=Decimal("19.99"), currency="USD", status="success", error_message=None, failure_reason=None, retry_count=0)
+
+    with patch("app.tasks.scraper_tasks.get_supabase_client", return_value=mock_db), \
+         patch("app.tasks.scraper_tasks.scrape_url", side_effect=mock_scrape), \
+         patch("app.tasks.scraper_tasks.set_scrape_progress"):
+
+        result = scrape_product_manual(product_id)
+
+        # Scraped only the first one, cancelled before scraping comp-2 and comp-3
+        assert len(scraped_urls) == 1
+        assert result["status"] == "cancelled"
+        assert "cancelled" in result.get("error", "").lower() or len(result["results"]) == 1
+
+
+def test_scrape_single_competitor_cancels_if_product_or_user_deleted():
+    """
+    Guarantee: Celery scrape_single_competitor task skips scraping and returns
+    cancelled status if the competitor's parent product or user was deleted.
+    """
+    user_id = "user-single-cancel"
+    product_id = "prod-single-cancel"
+    competitor_id = "comp-single-cancel"
+
+    # Mark user deleted
+    mark_user_deleted(user_id)
+
+    mock_db = MagicMock()
+    mock_comp_q = MagicMock()
+    mock_comp_q.select.return_value = mock_comp_q
+    mock_comp_q.eq.return_value = mock_comp_q
+    mock_comp_q.execute.return_value = MagicMock(
+        data=[{
+            "id": competitor_id,
+            "product_id": product_id,
+            "products": {"id": product_id, "user_id": user_id, "is_active": True}
+        }]
+    )
+    mock_db.table.return_value = mock_comp_q
+
+    mock_scrape = AsyncMock()
+
+    with patch("app.tasks.scraper_tasks.get_supabase_client", return_value=mock_db), \
+         patch("app.services.scraper_service.scrape_url", mock_scrape):
+
+        result = scrape_single_competitor(competitor_id)
+
+        assert result["status"] == "cancelled"
+        assert result["reason"] == "user_deleted"
+        # Guarantee: No external scrape call made
+        mock_scrape.assert_not_called()
+
+
+def test_cancel_tasks_for_user_revokes_registered_celery_tasks():
+    """
+    Guarantee: cancel_tasks_for_user retrieves registered task IDs, revokes them via Celery control,
+    and updates progress keys in Redis.
+    """
+    user_id = "user-celery-revoke-123"
+    prod_id = "prod-celery-revoke-456"
+    task_id = "celery-task-id-789"
+
+    register_active_scrape_task(user_id=user_id, product_id=prod_id, task_id=task_id)
+
+    with patch("app.tasks.celery_app.celery_app.control.revoke") as mock_revoke, \
+         patch("app.tasks.scraper_tasks.set_scrape_progress") as mock_set_progress:
+
+        revoked = cancel_tasks_for_user(user_id=user_id, product_ids=[prod_id])
+
+        assert task_id in revoked
+        mock_revoke.assert_called_with(task_id, terminate=True)
+        mock_set_progress.assert_called_with(
+            task_id,
+            {
+                "status": "cancelled",
+                "completed": 0,
+                "total": 0,
+                "results": [],
+                "error": "Account or product deleted",
+            }
+        )
+
+
+# ============================================================================
+# 4. Cache Invalidation and Error Resilience Tests
+# ============================================================================
+
+def test_dashboard_cache_invalidated_on_account_deletion():
+    """Guarantee: Deleting an account invalidates all cached dashboard views."""
+    user_id = "user-cache-inval-777"
+    db = MockSupabaseDB()
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.invalidate_dashboard_cache") as mock_cache_inval:
+
+        summary = delete_user_account(user_id, client=db)
+
+        assert summary["user_id"] == user_id
+        mock_cache_inval.assert_called_with(user_id)
+
+
+def test_account_deletion_with_empty_account_succeeds_cleanly():
+    """Guarantee: Deleting an account with no products or data succeeds without errors."""
+    user_id = "user-empty-data-000"
+    db = MockSupabaseDB()
+
+    summary = delete_user_account(user_id, client=db)
+
+    assert summary["user_id"] == user_id
+    assert summary["products_found"] == 0
+    assert summary["competitors_found"] == 0
+    assert is_user_deleted(user_id)
+    assert is_session_revoked(user_id)
+
+
+def test_account_deletion_unauthenticated_rejected(client: TestClient):
+    """Guarantee: Unauthenticated requests to DELETE /api/account/delete are rejected."""
+    response = client.delete("/api/account/delete")
+    assert response.status_code in (401, 403)
+
+
+def test_account_deletion_database_error_raises_http_400(client: TestClient):
+    """Guarantee: When a database error occurs during deletion, an HTTP 400 with friendly message is returned."""
+    user_id = "user-db-err-1"
+    token = _create_token(user_id=user_id, email="dberr@example.com")
+
+    with patch("app.services.account_service.delete_user_account", side_effect=RuntimeError("Database failure")):
+        response = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 400
+        assert "Unable to delete account" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_and_check_alerts_skips_external_scrape_if_product_or_user_deleted():
+    """
+    Guarantee: scrape_and_check_alerts aborts before initiating external scrape
+    when the competitor's parent product or user was deleted.
+    """
+    from app.services.scraper_service import scrape_and_check_alerts
+
+    competitor_id = "comp-alert-check-1"
+    product_id = "prod-alert-check-1"
+    user_id = "user-alert-check-1"
+
+    mock_db = MagicMock()
+    mock_comp_q = MagicMock()
+    mock_comp_q.select.return_value = mock_comp_q
+    mock_comp_q.eq.return_value = mock_comp_q
+    mock_comp_q.single.return_value = mock_comp_q
+    mock_comp_q.execute.return_value = MagicMock(
+        data={
+            "id": competitor_id,
+            "url": "https://competitor.com/item",
+            "product_id": product_id,
+            "products": {"id": product_id, "user_id": user_id, "is_active": True},
+        }
+    )
+    mock_db.table.return_value = mock_comp_q
+
+    # Mark user deleted
+    mark_user_deleted(user_id)
+
+    mock_scrape = AsyncMock()
+
+    with patch("app.db.database.get_supabase_client", return_value=mock_db), \
+         patch("app.services.scraper_service.scrape_url", mock_scrape):
+
+        result = await scrape_and_check_alerts(competitor_id)
+
+        assert result["scrape_result"]["status"] == "cancelled"
+        assert result["scrape_result"]["error"] == "Account deleted"
+        assert result["alert_result"] is None
+        # External scrape must NOT be invoked
+        mock_scrape.assert_not_called()
+
+
+def test_account_deletion_preserves_other_users_data(client: TestClient):
+    """
+    Multi-tenant isolation: Deleting User A must leave User B's products,
+    competitors, price history, pending alerts, and credentials intact.
+    """
+    user_a = "user-tenant-a"
+    user_b = "user-tenant-b"
+    token_a = _create_token(user_id=user_a, email="user_a@example.com")
+
+    db = MockSupabaseDB()
+
+    # User A data
+    db.tables["products"] = [
+        {"id": "prod-a", "user_id": user_a, "product_name": "Product A"},
+        {"id": "prod-b", "user_id": user_b, "product_name": "Product B"},
+    ]
+    db.tables["competitors"] = [
+        {"id": "comp-a", "product_id": "prod-a", "url": "https://a.com"},
+        {"id": "comp-b", "product_id": "prod-b", "url": "https://b.com"},
+    ]
+    db.tables["user_alert_settings"] = [
+        {"id": "s-a", "user_id": user_a, "webhook_url": "https://a.com/hook", "webhook_secret": "secret-a-12345678"},
+        {"id": "s-b", "user_id": user_b, "webhook_url": "https://b.com/hook", "webhook_secret": "secret-b-12345678"},
+    ]
+    db.tables["pending_alerts"] = [
+        {"id": "alert-a", "user_id": user_a, "product_id": "prod-a", "competitor_id": "comp-a"},
+        {"id": "alert-b", "user_id": user_b, "product_id": "prod-b", "competitor_id": "comp-b"},
+    ]
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        response = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token_a}"})
+        assert response.status_code == 200
+
+        # User B's entities must all remain unchanged
+        assert len(db.tables["products"]) == 1
+        assert db.tables["products"][0]["id"] == "prod-b"
+        assert db.tables["products"][0]["user_id"] == user_b
+
+        assert len(db.tables["competitors"]) == 1
+        assert db.tables["competitors"][0]["id"] == "comp-b"
+
+        assert len(db.tables["user_alert_settings"]) == 1
+        assert db.tables["user_alert_settings"][0]["user_id"] == user_b
+        assert db.tables["user_alert_settings"][0]["webhook_secret"] == "secret-b-12345678"
+
+        assert len(db.tables["pending_alerts"]) == 1
+        assert db.tables["pending_alerts"][0]["user_id"] == user_b
+

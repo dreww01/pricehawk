@@ -880,6 +880,7 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
     """
     from app.db.database import get_supabase_client
     from app.services.alert_service import AlertService
+    from app.services.account_service import is_product_deleted, is_user_deleted
 
     sb = get_supabase_client()  # Use service key
 
@@ -887,7 +888,7 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
     try:
         comp_response = (
             sb.table("competitors")
-            .select("id, url")
+            .select("id, url, product_id, products(id, user_id, is_active)")
             .eq("id", competitor_id)
             .single()
             .execute()
@@ -919,7 +920,50 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             "alert_result": None,
         }
 
-    url = comp_response.data["url"]
+    comp_record = comp_response.data
+    prod_id = comp_record.get("product_id") if isinstance(comp_record, dict) else None
+    if prod_id and is_product_deleted(prod_id):
+        return {
+            "scrape_result": {
+                "status": "cancelled",
+                "price": None,
+                "currency": "USD",
+                "error": "Product deleted",
+                "failure_reason": ScrapeFailureReason.NOT_FOUND,
+                "retry_count": 0,
+            },
+            "alert_result": None,
+        }
+
+    prod_info = comp_record.get("products") if isinstance(comp_record, dict) else None
+    if isinstance(prod_info, dict):
+        if prod_info.get("is_active") is False:
+            return {
+                "scrape_result": {
+                    "status": "cancelled",
+                    "price": None,
+                    "currency": "USD",
+                    "error": "Product inactive",
+                    "failure_reason": ScrapeFailureReason.NOT_FOUND,
+                    "retry_count": 0,
+                },
+                "alert_result": None,
+            }
+        owner_id = prod_info.get("user_id")
+        if owner_id and is_user_deleted(owner_id):
+            return {
+                "scrape_result": {
+                    "status": "cancelled",
+                    "price": None,
+                    "currency": "USD",
+                    "error": "Account deleted",
+                    "failure_reason": ScrapeFailureReason.NOT_FOUND,
+                    "retry_count": 0,
+                },
+                "alert_result": None,
+            }
+
+    url = comp_record["url"]
 
     # Scrape the URL
     try:

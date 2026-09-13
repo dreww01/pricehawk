@@ -84,8 +84,50 @@ def scrape_product_manual(self, product_id: str) -> dict:
     Updates Redis with progress for SSE streaming.
     Called from manual scrape endpoint.
     """
+    from app.services.account_service import is_product_deleted, is_user_deleted
+
     task_id = getattr(getattr(self, "request", None), "id", None) or "manual-task"
     client = get_supabase_client()
+
+    # Guard: abort immediately if product has been marked deleted
+    if is_product_deleted(product_id):
+        set_scrape_progress(task_id, {
+            "status": "cancelled",
+            "completed": 0,
+            "total": 0,
+            "results": [],
+            "error": "Account or product deleted",
+        })
+        return {"status": "cancelled", "results": []}
+
+    # Verify if product exists and whether owning user has been deleted
+    user_id = None
+    try:
+        prod_res = client.table("products").select("id, user_id, is_active").eq("id", product_id).execute()
+        if prod_res and isinstance(prod_res.data, list) and len(prod_res.data) > 0:
+            prod_row = prod_res.data[0]
+            if isinstance(prod_row, dict):
+                if prod_row.get("is_active") is False:
+                    set_scrape_progress(task_id, {
+                        "status": "cancelled",
+                        "completed": 0,
+                        "total": 0,
+                        "results": [],
+                        "error": "Product inactive",
+                    })
+                    return {"status": "cancelled", "results": []}
+                user_id = prod_row.get("user_id")
+                if user_id and is_user_deleted(user_id):
+                    set_scrape_progress(task_id, {
+                        "status": "cancelled",
+                        "completed": 0,
+                        "total": 0,
+                        "results": [],
+                        "error": "Account deleted",
+                    })
+                    return {"status": "cancelled", "results": []}
+    except Exception as exc:
+        logger.debug(f"Product status verification error for {product_id}: {exc}")
 
     # Fetch competitors for this product
     competitors_result = (
@@ -120,6 +162,19 @@ def scrape_product_manual(self, product_id: str) -> dict:
     results = []
 
     for i, competitor in enumerate(competitors):
+        # Abort mid-run if product or user was deleted
+        if is_product_deleted(product_id) or (user_id and is_user_deleted(user_id)):
+            logger.info(f"Manual scrape aborted mid-run for product {product_id}")
+            set_scrape_progress(task_id, {
+                "status": "cancelled",
+                "completed": i,
+                "total": total,
+                "current": None,
+                "results": results,
+                "error": "Scrape cancelled: account or product deleted",
+            })
+            return {"status": "cancelled", "results": results}
+
         competitor_id = competitor.get("id") if isinstance(competitor, dict) else None
         url = competitor.get("url") if isinstance(competitor, dict) else None
         retailer = (
@@ -257,12 +312,13 @@ def scrape_product_manual(self, product_id: str) -> dict:
 
         logger.info(f"Manual scrape completed for product {product_id}: {total} competitors")
     finally:
-        # Invalidate dashboard cache for product owner
-        try:
-            from app.services.dashboard_cache import invalidate_dashboard_cache_for_product
-            invalidate_dashboard_cache_for_product(product_id)
-        except Exception as exc:
-            logger.debug(f"Failed to invalidate dashboard cache for product {product_id}: {exc}")
+        # Invalidate dashboard cache for product owner unless deleted
+        if not is_product_deleted(product_id) and not (user_id and is_user_deleted(user_id)):
+            try:
+                from app.services.dashboard_cache import invalidate_dashboard_cache_for_product
+                invalidate_dashboard_cache_for_product(product_id)
+            except Exception as exc:
+                logger.debug(f"Failed to invalidate dashboard cache for product {product_id}: {exc}")
 
     return {"status": "completed", "results": results}
 
@@ -291,7 +347,33 @@ def scrape_single_competitor(self, competitor_id: str) -> dict:
     This replaces the old scrape_single_competitor function.
     Now uses scrape_and_check_alerts which handles both scraping and alert detection.
     """
+    from app.services.account_service import is_product_deleted, is_user_deleted
+
     client = get_supabase_client()
+
+    # Guard: verify competitor and parent product are not deleted or inactive
+    try:
+        comp_res = (
+            client.table("competitors")
+            .select("id, product_id, products(id, user_id, is_active)")
+            .eq("id", competitor_id)
+            .execute()
+        )
+        if comp_res and isinstance(comp_res.data, list) and len(comp_res.data) > 0:
+            comp_rec = comp_res.data[0]
+            if isinstance(comp_rec, dict):
+                pid = comp_rec.get("product_id")
+                if pid and is_product_deleted(pid):
+                    return {"status": "cancelled", "reason": "product_deleted"}
+                prod_data = comp_rec.get("products")
+                if isinstance(prod_data, dict):
+                    if prod_data.get("is_active") is False:
+                        return {"status": "cancelled", "reason": "product_inactive"}
+                    uid = prod_data.get("user_id")
+                    if uid and is_user_deleted(uid):
+                        return {"status": "cancelled", "reason": "user_deleted"}
+    except Exception as exc:
+        logger.debug(f"Competitor active check failed for {competitor_id}: {exc}")
 
     if _was_scraped_today(client, competitor_id):
         logger.info(f"Competitor {competitor_id} already scraped today, skipping")

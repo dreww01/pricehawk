@@ -41,12 +41,19 @@ def mock_supabase_client():
 
 @pytest.fixture(autouse=True)
 def reset_dashboard_cache():
-    """Ensure dashboard cache is cleared before and after each test."""
+    """Ensure dashboard cache, session revocations, and task states are cleared before and after each test."""
     from app.services.dashboard_cache import get_dashboard_cache
+    from app.core.security import clear_revoked_users
+    from app.services.account_service import clear_account_deletion_state
+
     cache = get_dashboard_cache()
     cache.clear_all()
+    clear_revoked_users()
+    clear_account_deletion_state()
     yield
     cache.clear_all()
+    clear_revoked_users()
+    clear_account_deletion_state()
 
 
 @pytest.fixture
