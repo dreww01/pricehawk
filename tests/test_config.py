@@ -71,3 +71,25 @@ def test_jwt_allowed_algorithms_parse_from_environment_variable(
 def test_rejects_unsupported_environment() -> None:
     with pytest.raises(ValidationError):
         build_settings(env="preview")
+
+
+def test_dashboard_cache_settings() -> None:
+    settings = build_settings()
+    assert settings.dashboard_cache_ttl_seconds == 60
+    assert settings.dashboard_cache_stats_ttl is None
+    assert settings.dashboard_cache_activity_ttl is None
+    assert settings.dashboard_cache_products_ttl is None
+    assert settings.dashboard_cache_enabled is True
+
+    custom_settings = build_settings(
+        dashboard_cache_ttl_seconds=120,
+        dashboard_cache_stats_ttl=30,
+        dashboard_cache_activity_ttl=45,
+        dashboard_cache_products_ttl=60,
+        dashboard_cache_enabled=False,
+    )
+    assert custom_settings.dashboard_cache_ttl_seconds == 120
+    assert custom_settings.dashboard_cache_stats_ttl == 30
+    assert custom_settings.dashboard_cache_activity_ttl == 45
+    assert custom_settings.dashboard_cache_products_ttl == 60
+    assert custom_settings.dashboard_cache_enabled is False

@@ -30,3 +30,13 @@ def auth_headers():
     In real tests, this would use a test user token.
     """
     return {"Authorization": "Bearer test_token"}
+
+
+@pytest.fixture(autouse=True)
+def reset_dashboard_cache():
+    """Ensure dashboard cache is cleared before and after each test."""
+    from app.services.dashboard_cache import get_dashboard_cache
+    cache = get_dashboard_cache()
+    cache.clear_all()
+    yield
+    cache.clear_all()

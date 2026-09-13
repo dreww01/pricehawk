@@ -964,6 +964,13 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
         logger.error(
             f"Failed to record price history for competitor {competitor_id} after {max_db_retries} attempts: {db_persistence_error}"
         )
+    else:
+        # Invalidate dashboard cache immediately once price history has committed
+        try:
+            from app.services.dashboard_cache import invalidate_dashboard_cache_for_competitor
+            invalidate_dashboard_cache_for_competitor(competitor_id, client=sb)
+        except Exception as e:
+            logger.debug(f"Failed to invalidate dashboard cache for competitor {competitor_id}: {e}")
 
     # Check for alerts only if scrape was successful AND database persistence succeeded
     alert_result = None
@@ -977,6 +984,12 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             )
         except Exception as e:
             logger.error(f"Alert evaluation failed for competitor {competitor_id}: {e}")
+        finally:
+            try:
+                from app.services.dashboard_cache import invalidate_dashboard_cache_for_competitor
+                invalidate_dashboard_cache_for_competitor(competitor_id, client=sb)
+            except Exception:
+                pass
 
     # If persistence failed, the competitor must not be reported as successfully completed
     if db_persistence_error:
@@ -991,6 +1004,13 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             },
             "alert_result": None,
         }
+
+    # Automatically invalidate dashboard cache when new price scrapes are persisted
+    try:
+        from app.services.dashboard_cache import invalidate_dashboard_cache_for_competitor
+        invalidate_dashboard_cache_for_competitor(competitor_id, client=sb)
+    except Exception as e:
+        logger.debug(f"Failed to invalidate dashboard cache for competitor {competitor_id}: {e}")
 
     return {
         "scrape_result": {

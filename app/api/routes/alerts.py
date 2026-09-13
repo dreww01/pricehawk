@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.services.email_service import EmailService
 from app.services.digest_service import DigestService
+from app.services.dashboard_cache import invalidate_dashboard_cache
 
 
 class AcceptCurrencyRequest(BaseModel):
@@ -437,10 +438,16 @@ async def accept_currency(
             "expected_currency": request.currency
         }).eq("id", competitor_id).execute()
 
-        # Dismiss any pending currency_changed alerts for this competitor
-        service_sb.table("pending_alerts").update({
-            "included_in_digest": True
-        }).eq("competitor_id", competitor_id).eq("alert_type", "currency_changed").execute()
+        # Invalidate dashboard cache immediately once currency update commits
+        invalidate_dashboard_cache(current_user.id)
+
+        try:
+            # Dismiss any pending currency_changed alerts for this competitor
+            service_sb.table("pending_alerts").update({
+                "included_in_digest": True
+            }).eq("competitor_id", competitor_id).eq("alert_type", "currency_changed").execute()
+        finally:
+            invalidate_dashboard_cache(current_user.id)
 
         return {
             "success": True,
@@ -491,22 +498,26 @@ async def accept_all_currencies(
         service_sb = get_supabase_client()
         updated_count = 0
 
-        for alert in alerts_response.data:
-            competitor_id = alert["competitor_id"]
-            new_currency = alert["new_currency"]
+        try:
+            for alert in alerts_response.data:
+                competitor_id = alert["competitor_id"]
+                new_currency = alert["new_currency"]
 
-            if new_currency:
-                # Update competitor's expected currency
-                service_sb.table("competitors").update({
-                    "expected_currency": new_currency
-                }).eq("id", competitor_id).execute()
+                if new_currency:
+                    # Update competitor's expected currency
+                    service_sb.table("competitors").update({
+                        "expected_currency": new_currency
+                    }).eq("id", competitor_id).execute()
 
-                # Mark alert as processed
-                service_sb.table("pending_alerts").update({
-                    "included_in_digest": True
-                }).eq("id", alert["id"]).execute()
+                    # Mark alert as processed
+                    service_sb.table("pending_alerts").update({
+                        "included_in_digest": True
+                    }).eq("id", alert["id"]).execute()
 
-                updated_count += 1
+                    updated_count += 1
+        finally:
+            if updated_count > 0:
+                invalidate_dashboard_cache(current_user.id)
 
         return {
             "success": True,
