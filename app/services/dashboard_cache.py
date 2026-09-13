@@ -154,10 +154,21 @@ class DashboardCache:
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8")
                     return json.loads(raw)
+                # Key does not exist in Redis (invalidated, expired, or never set).
+                # Redis is authoritative; ensure local memory store cannot serve stale data.
+                with self._lock:
+                    self._memory_store.pop(key, None)
+                    user_id = self._extract_user_id(key)
+                    if user_id and user_id in self._user_keys:
+                        self._user_keys[user_id].discard(key)
+                    self._misses += 1
+                return None
             except Exception as exc:
-                logger.debug(f"Redis get failed for {key}, checking in-memory: {exc}")
+                logger.debug(f"Redis get failed for {key}, checking in-memory fallback: {exc}")
+                if self.backend == "redis":
+                    raise
 
-        # 2. Check in-memory store
+        # 2. Check in-memory store (when Redis is not active or failed)
         now = time.time()
         with self._lock:
             entry = self._memory_store.get(key)
@@ -169,6 +180,9 @@ class DashboardCache:
                 else:
                     # Expired
                     del self._memory_store[key]
+                    user_id = self._extract_user_id(key)
+                    if user_id and user_id in self._user_keys:
+                        self._user_keys[user_id].discard(key)
 
             self._misses += 1
         return None
@@ -176,7 +190,7 @@ class DashboardCache:
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         """
         Store value in cache with specified TTL in seconds.
-        Writes to both Redis (if available) and in-memory store.
+        Writes to Redis when available, or falls back to in-memory store.
         """
         if not self.enabled:
             return
@@ -190,10 +204,13 @@ class DashboardCache:
             try:
                 serialized = json.dumps(value)
                 redis_conn.setex(key, effective_ttl, serialized)
+                return
             except Exception as exc:
-                logger.debug(f"Redis set failed for {key}: {exc}")
+                logger.debug(f"Redis set failed for {key}, falling back to memory: {exc}")
+                if self.backend == "redis":
+                    raise
 
-        # 2. Write to in-memory store
+        # 2. Write to in-memory store (only when Redis is unavailable)
         with self._lock:
             self._memory_store[key] = (copy.deepcopy(value), expire_at)
             user_id = self._extract_user_id(key)

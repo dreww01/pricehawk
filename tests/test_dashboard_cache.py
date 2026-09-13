@@ -173,6 +173,58 @@ def test_redis_connection_failure_falls_back_to_memory():
     assert val == {"products": 42}
 
 
+def test_worker_invalidation_prevents_web_process_serving_stale_cache():
+    """
+    REV-01 Regression Test:
+    When Redis is the active backend, invalidation by a worker process (separate cache instance)
+    must remove the key from Redis, and subsequent reads by the web process (separate cache instance)
+    must NOT return any previously cached or process-local value.
+    """
+    class SharedRedisFake:
+        def __init__(self):
+            self.store = {}
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def setex(self, key, ttl, val):
+            self.store[key] = val
+
+        def delete(self, *keys):
+            count = 0
+            for k in keys:
+                if self.store.pop(k, None) is not None:
+                    count += 1
+            return count
+
+    shared_redis = SharedRedisFake()
+    web_cache = DashboardCache(default_ttl=60, redis_client=shared_redis, backend="redis")
+    worker_cache = DashboardCache(default_ttl=60, redis_client=shared_redis, backend="redis")
+
+    user_id = "user-proc-coherence"
+    key = f"dashboard:stats:{user_id}"
+    initial_stats = {"products": 5, "competitors": 10}
+
+    # 1. Web process writes to cache
+    web_cache.set(key, initial_stats)
+    assert web_cache.get(key) == initial_stats
+
+    # Even if web process had an old in-memory copy lingering
+    web_cache._memory_store[key] = ({"products": "stale_local_copy"}, time.time() + 60)
+
+    # 2. Worker process invalidates the user's dashboard cache
+    worker_cache.invalidate(user_id)
+
+    # 3. Web process reads the key: Redis misses, must NOT return stale local copy
+    res = web_cache.get(key)
+    assert res is None, "Web process must not return stale local data after worker invalidation"
+
+    # 4. Web process can write fresh data
+    fresh_stats = {"products": 6, "competitors": 12}
+    web_cache.set(key, fresh_stats)
+    assert web_cache.get(key) == fresh_stats
+
+
 # ============================================================================
 # 2. Integration Tests: Dashboard API Caching & Hit Rate Measurement
 # ============================================================================
