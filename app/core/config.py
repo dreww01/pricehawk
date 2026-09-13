@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     # Store Discovery
     max_products_fetch: int = 500  # Max products to fetch from API-based stores (Shopify, WooCommerce)
 
+    # Scraper Resilience & Retries
+    scraper_max_retries: int = 3
+    scraper_base_delay: float = 1.0
+    scraper_max_delay: float = 10.0
+    scraper_backoff_factor: float = 2.0
+    scraper_timeout: float = 30.0
+
     # SMTP / Email
     smtp_host: str | None = None
     smtp_port: int = 587

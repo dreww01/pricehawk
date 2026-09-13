@@ -152,6 +152,8 @@ class ScrapeResultResponse(BaseModel):
     currency: str
     status: str
     error_message: str | None
+    failure_reason: str | None = None
+    retry_count: int = 0
 
 
 # ---------------------------------------------------------------------------
