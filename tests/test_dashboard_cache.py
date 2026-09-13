@@ -16,7 +16,7 @@ Verifies:
 import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -366,6 +366,61 @@ def test_dashboard_products_caching(client: TestClient):
         assert r2.json() == r1.json()
 
         assert mock_sb.table.call_count == call_count_before
+
+
+def test_dashboard_response_cache_control_headers_require_server_reach(client: TestClient):
+    """
+    REV-02 Regression Test:
+    Dashboard endpoints (/api/dashboard/stats, /api/dashboard/activity, /api/dashboard/products)
+    must send Cache-Control headers that prevent clients/browsers from retaining responses without
+    contacting the server, both on HIT, MISS, and when dashboard cache is disabled.
+    """
+    user_id = "user-cache-control-test"
+    token = create_token(sub=user_id)
+    cookies = {"access_token": token}
+
+    mock_sb = MagicMock()
+    mock_sb.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(count=1, data=[])
+    mock_sb.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+    mock_sb.table.return_value.select.return_value.eq.return_value.gte.return_value.execute.return_value = MagicMock(count=1, data=[])
+
+    endpoints = [
+        "/api/dashboard/stats",
+        "/api/dashboard/activity",
+        "/api/dashboard/products",
+    ]
+
+    with patch("app.api.routes.pages.get_supabase_client", return_value=mock_sb):
+        # 1. Enabled mode: verify MISS and HIT have no-cache directives and no max-age
+        for endpoint in endpoints:
+            # MISS
+            res_miss = client.get(endpoint, cookies=cookies)
+            assert res_miss.status_code == 200
+            assert res_miss.headers.get("X-Cache") == "MISS"
+            cc_miss = res_miss.headers.get("Cache-Control", "")
+            assert "no-cache" in cc_miss
+            assert "max-age" not in cc_miss
+
+            # HIT
+            res_hit = client.get(endpoint, cookies=cookies)
+            assert res_hit.status_code == 200
+            assert res_hit.headers.get("X-Cache") == "HIT"
+            cc_hit = res_hit.headers.get("Cache-Control", "")
+            assert "no-cache" in cc_hit
+            assert "max-age" not in cc_hit
+
+        # 2. Disabled mode: verify endpoints still return no-cache directives and no max-age
+        cache = get_dashboard_cache()
+        cache.clear_all()
+        with patch("app.services.dashboard_cache.DashboardCache.enabled", new_callable=PropertyMock) as mock_enabled:
+            mock_enabled.return_value = False
+            for endpoint in endpoints:
+                res = client.get(endpoint, cookies=cookies)
+                assert res.status_code == 200
+                assert res.headers.get("X-Cache") == "MISS"
+                cc = res.headers.get("Cache-Control", "")
+                assert "no-cache" in cc
+                assert "max-age" not in cc
 
 
 # ============================================================================

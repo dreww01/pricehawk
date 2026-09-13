@@ -396,7 +396,7 @@ async def get_dashboard_stats(
             cached_stats,
             headers={
                 "X-Cache": "HIT",
-                "Cache-Control": f"private, max-age={cache.get_stats_ttl()}",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
             },
         )
 
@@ -452,7 +452,7 @@ async def get_dashboard_stats(
         stats,
         headers={
             "X-Cache": "MISS",
-            "Cache-Control": f"private, max-age={cache.get_stats_ttl()}",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
         },
     )
 
@@ -476,7 +476,7 @@ async def get_dashboard_activity(
             {"activity": cached_activity},
             headers={
                 "X-Cache": "HIT",
-                "Cache-Control": f"private, max-age={cache.get_activity_ttl()}",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
             },
         )
 
@@ -515,7 +515,7 @@ async def get_dashboard_activity(
         {"activity": activity},
         headers={
             "X-Cache": "MISS",
-            "Cache-Control": f"private, max-age={cache.get_activity_ttl()}",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
         },
     )
 
@@ -539,7 +539,7 @@ async def get_dashboard_products(
             {"products": cached_products},
             headers={
                 "X-Cache": "HIT",
-                "Cache-Control": f"private, max-age={cache.get_products_ttl()}",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
             },
         )
 
@@ -578,7 +578,7 @@ async def get_dashboard_products(
         {"products": products},
         headers={
             "X-Cache": "MISS",
-            "Cache-Control": f"private, max-age={cache.get_products_ttl()}",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
         },
     )
 
