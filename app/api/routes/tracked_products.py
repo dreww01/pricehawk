@@ -140,11 +140,14 @@ def update_product(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update product")
 
     product = product_result.data[0]
-    competitors_result = client.table("competitors").select("*").eq("product_id", product_id).execute()
-
+    # Invalidate dashboard cache immediately once product update commits
     invalidate_dashboard_cache(current_user.id)
 
-    return _build_product_response(product, competitors_result.data or [])
+    try:
+        competitors_result = client.table("competitors").select("*").eq("product_id", product_id).execute()
+        return _build_product_response(product, competitors_result.data or [])
+    finally:
+        invalidate_dashboard_cache(current_user.id)
 
 
 @router.delete(

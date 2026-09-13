@@ -92,6 +92,9 @@ async def track_products(
     group = group_result.data[0]
     group_id = group["id"]
 
+    # Invalidate immediately once primary product mutation has committed
+    invalidate_dashboard_cache(current_user.id)
+
     # Add competitors for each product URL (extract domain as retailer_name)
     competitors_data = []
     for product in body.products:
@@ -106,28 +109,28 @@ async def track_products(
             "alert_threshold_percent": float(body.alert_threshold_percent),
         })
 
-    competitors_result = client.table("competitors").insert(competitors_data).execute()
-    competitors = competitors_result.data or []
-    products_added = len(competitors)
+    try:
+        competitors_result = client.table("competitors").insert(competitors_data).execute()
+        competitors = competitors_result.data or []
+        products_added = len(competitors)
 
-    # Store discovered prices directly in price_history (no re-scraping)
-    # Use service client to bypass RLS (price_history has no INSERT policy for users)
-    service_client = get_supabase_client()
-    prices_stored = 0
-    for product, competitor in zip(body.products, competitors):
-        if product.price is not None:
-            price_data = {
-                "competitor_id": competitor["id"],
-                "price": float(product.price),
-                "currency": product.currency,
-                "scrape_status": "success",
-                "error_message": None,
-            }
-            service_client.table("price_history").insert(price_data).execute()
-            prices_stored += 1
-
-    # Invalidate dashboard cache for the current user
-    invalidate_dashboard_cache(current_user.id)
+        # Store discovered prices directly in price_history (no re-scraping)
+        # Use service client to bypass RLS (price_history has no INSERT policy for users)
+        service_client = get_supabase_client()
+        prices_stored = 0
+        for product, competitor in zip(body.products, competitors):
+            if product.price is not None:
+                price_data = {
+                    "competitor_id": competitor["id"],
+                    "price": float(product.price),
+                    "currency": product.currency,
+                    "scrape_status": "success",
+                    "error_message": None,
+                }
+                service_client.table("price_history").insert(price_data).execute()
+                prices_stored += 1
+    finally:
+        invalidate_dashboard_cache(current_user.id)
 
     return TrackProductsResponse(
         group_id=group_id,

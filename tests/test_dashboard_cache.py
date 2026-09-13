@@ -678,3 +678,161 @@ def test_cache_invalidation_helpers_robust_against_missing_entities():
     invalidate_dashboard_cache_for_competitor("nonexistent-comp", client=mock_db)
     invalidate_dashboard_cache("")
     invalidate_dashboard_cache(None)  # type: ignore
+
+
+# ============================================================================
+# 5. Failure-Path Invalidation Tests (REV-03)
+# ============================================================================
+
+def test_cache_invalidation_on_product_tracking_failure_after_primary_commit(client: TestClient):
+    """
+    REV-03 Regression Test:
+    When product tracking commits the product group and competitors but subsequent
+    price-history insertion fails, the user's dashboard cache must still be invalidated.
+    """
+    user_id = "user-track-fail-path"
+    token = create_token(sub=user_id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    cache = get_dashboard_cache()
+    cache.set_stats_data(user_id, {"products": 10, "competitors": 20})
+    cache.set_products_data(user_id, [{"id": "p1", "product_name": "Old Product"}])
+    assert cache.get_stats_data(user_id) is not None
+
+    mock_prod = MagicMock()
+    mock_prod.insert.return_value.execute.return_value = MagicMock(
+        data=[{"id": "new-prod-id", "product_name": "Tracked Item"}]
+    )
+
+    mock_comp = MagicMock()
+    mock_comp.insert.return_value.execute.return_value = MagicMock(
+        data=[{"id": "new-comp-id", "url": "https://store.com/item"}]
+    )
+
+    # Force price_history insert to raise an exception
+    mock_ph = MagicMock()
+    mock_ph.insert.return_value.execute.side_effect = RuntimeError("Price history insert failed")
+
+    mock_sb = MagicMock()
+    mock_sb.table.side_effect = lambda name: (
+        mock_prod if name == "products" else (mock_comp if name == "competitors" else mock_ph)
+    )
+
+    payload = {
+        "group_name": "Tracked Item",
+        "alert_threshold_percent": 5.0,
+        "products": [
+            {"title": "Tracked Item", "url": "https://store.com/item", "price": 49.99, "currency": "USD"}
+        ],
+    }
+
+    with patch("app.api.routes.discovery.get_supabase_client", return_value=mock_sb):
+        with pytest.raises(RuntimeError, match="Price history insert failed"):
+            client.post("/api/stores/track", json=payload, headers=headers)
+
+    # Cache must still be invalidated despite downstream failure
+    assert cache.get_stats_data(user_id) is None
+    assert cache.get_products_data(user_id) is None
+
+
+def test_cache_invalidation_on_product_update_failure_after_primary_commit(client: TestClient):
+    """
+    REV-03 Regression Test:
+    When updating a product commits the update but subsequent competitor fetching
+    or response building raises an exception, the user's dashboard cache must still be invalidated.
+    """
+    user_id = "user-update-fail-path"
+    token = create_token(sub=user_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    product_id = "prod-fail-123"
+
+    cache = get_dashboard_cache()
+    cache.set_stats_data(user_id, {"products": 5})
+    cache.set_products_data(user_id, [{"id": product_id, "product_name": "Initial Name"}])
+    assert cache.get_stats_data(user_id) is not None
+
+    mock_sb = MagicMock()
+    mock_sb.table("products").update().eq().eq().execute.return_value = MagicMock(
+        data=[{
+            "id": product_id,
+            "product_name": "Updated Name",
+            "is_active": True,
+            "created_at": "2026-09-13T00:00:00Z",
+            "updated_at": "2026-09-13T01:00:00Z",
+        }]
+    )
+    # Force competitor query after commit to fail
+    mock_sb.table("competitors").select().eq().execute.side_effect = RuntimeError("Competitors query failed")
+
+    with patch("app.api.routes.products.get_supabase_client", return_value=mock_sb):
+        with pytest.raises(RuntimeError, match="Competitors query failed"):
+            client.put(
+                f"/api/products/{product_id}",
+                json={"product_name": "Updated Name"},
+                headers=headers,
+            )
+
+    # Cache must still be invalidated despite downstream failure
+    assert cache.get_stats_data(user_id) is None
+    assert cache.get_products_data(user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_invalidation_on_persisted_scrape_when_alert_handling_raises():
+    """
+    REV-03 Regression Test:
+    When a scrape result and price history have successfully committed to the database,
+    even if subsequent alert handling raises an unexpected exception, the user's dashboard
+    cache must still be invalidated.
+    """
+    competitor_id = "comp-fail-scrape-123"
+    product_id = "prod-fail-scrape-456"
+    user_id = "user-fail-scrape-owner"
+
+    cache = get_dashboard_cache()
+    cache.set_stats_data(user_id, {"products": 3, "competitors": 7})
+    cache.set_activity_data(user_id, [{"id": "act-1"}])
+    assert cache.get_stats_data(user_id) is not None
+
+    mock_db = MagicMock()
+
+    def db_table_router(table_name: str):
+        m = MagicMock()
+        m.select.return_value = m
+        m.eq.return_value = m
+        m.single.return_value = m
+        m.insert.return_value = m
+        if table_name == "competitors":
+            m.execute.return_value = MagicMock(
+                data={"id": competitor_id, "url": "https://store.example.com/item", "product_id": product_id}
+            )
+        elif table_name == "products":
+            m.execute.return_value = MagicMock(
+                data={"id": product_id, "user_id": user_id}
+            )
+        elif table_name == "price_history":
+            m.execute.return_value = MagicMock(data=[])
+        return m
+
+    mock_db.table.side_effect = db_table_router
+
+    from app.services.scraper_service import ScrapeResult, scrape_and_check_alerts
+
+    fake_scrape = ScrapeResult(
+        price=Decimal("45.00"),
+        currency="USD",
+        status="success",
+    )
+
+    # Simulate AlertService.check_price_change_and_alert raising an exception
+    with patch("app.db.database.get_supabase_client", return_value=mock_db), \
+         patch("app.services.scraper_service.scrape_url", AsyncMock(return_value=fake_scrape)), \
+         patch("app.services.alert_service.AlertService.check_price_change_and_alert", AsyncMock(side_effect=RuntimeError("Alert processing failed"))):
+
+        result = await scrape_and_check_alerts(competitor_id)
+
+    # Scrape result status is success and price was persisted
+    assert result["scrape_result"]["status"] == "success"
+    # Cache must still be invalidated
+    assert cache.get_stats_data(user_id) is None
+    assert cache.get_activity_data(user_id) is None
