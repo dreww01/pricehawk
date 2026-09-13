@@ -625,3 +625,114 @@ def test_account_deletion_preserves_other_users_data(client: TestClient):
         assert len(db.tables["pending_alerts"]) == 1
         assert db.tables["pending_alerts"][0]["user_id"] == user_b
 
+
+# ============================================================================
+# 5. Auth Identity Deletion & Retryability Tests (REV-01)
+# ============================================================================
+
+def test_account_deletion_fails_when_auth_admin_unavailable(client: TestClient):
+    """
+    REV-01: When Supabase Auth admin deletion API is unavailable,
+    the endpoint must return HTTP 400 (never 200) and preserve safe retryability.
+    """
+    user_id = "user-auth-unavail-1"
+    email = "authunavail@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    db.auth.admin = None  # Admin auth unavailable
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        response = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 400
+        assert "Unable to delete account" in response.json()["detail"]
+
+        # Guarantee: user session was NOT permanently revoked on failure, keeping retry open
+        assert not is_user_deleted(user_id)
+        assert not is_session_revoked(user_id)
+
+
+def test_account_deletion_fails_when_auth_admin_raises_error(client: TestClient):
+    """
+    REV-01: When auth.admin.delete_user raises an error, the endpoint must
+    return HTTP 400 (never 200) and allow the user to safely retry.
+    """
+    user_id = "user-auth-err-1"
+    email = "autherr@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    db.auth.admin.delete_user.side_effect = RuntimeError("Supabase Auth API connection failure")
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        response = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 400
+        assert "Unable to delete account" in response.json()["detail"]
+
+        # Identity was not deleted in auth.users
+        assert user_id not in db.auth_admin_deleted
+        # User is not permanently locked out
+        assert not is_user_deleted(user_id)
+        assert not is_session_revoked(user_id)
+
+
+def test_account_deletion_fails_when_auth_admin_unconfirmed(client: TestClient):
+    """
+    REV-01: When auth.admin.delete_user does not confirm deletion (e.g. returns error or False),
+    the endpoint must return HTTP 400 and preserve retryability.
+    """
+    user_id = "user-auth-unconf-1"
+    email = "authunconf@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    db.auth.admin.delete_user.side_effect = None
+    db.auth.admin.delete_user.return_value = {"error": "User deletion unconfirmed", "success": False}
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        response = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 400
+        assert "Unable to delete account" in response.json()["detail"]
+
+        assert not is_user_deleted(user_id)
+        assert not is_session_revoked(user_id)
+
+
+def test_account_deletion_auth_failure_allows_safe_retry(client: TestClient):
+    """
+    REV-01: Proves that an initial Auth deletion failure can be safely retried
+    with the same credentials once the service recovers, resulting in a successful 200 response.
+    """
+    user_id = "user-auth-retry-1"
+    email = "authretry@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    # First attempt: Auth admin fails
+    db.auth.admin.delete_user.side_effect = RuntimeError("Transient Auth API timeout")
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db):
+
+        # First attempt fails with 400
+        resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp1.status_code == 400
+
+        # Token is still valid (not rejected with 401 Unauthorized)
+        # Service recovers:
+        db.auth.admin.delete_user.side_effect = db._admin_delete_user
+
+        # Second attempt succeeds with 200
+        resp2 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp2.status_code == 200
+        assert "Account data deleted successfully" in resp2.json()["message"]
+        assert user_id in db.auth_admin_deleted
+        assert is_user_deleted(user_id)
+        assert is_session_revoked(user_id)
+

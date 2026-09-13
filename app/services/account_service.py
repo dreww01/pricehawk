@@ -90,6 +90,28 @@ def mark_user_deleted(user_id: str) -> None:
         logger.debug(f"Failed to invoke revoke_user_sessions for {user_id}: {exc}")
 
 
+def unmark_user_deleted(user_id: str) -> None:
+    """Clear deletion and revocation markers for a user if deletion fails, keeping retries safe."""
+    if not user_id:
+        return
+
+    with _account_lock:
+        _deleted_users.discard(user_id)
+
+    redis_conn = _get_redis_conn()
+    if redis_conn:
+        try:
+            redis_conn.delete(f"deleted_user:{user_id}")
+        except Exception as exc:
+            logger.debug(f"Failed to clear deleted_user in Redis for {user_id}: {exc}")
+
+    try:
+        from app.core.security import unrevoke_user_sessions
+        unrevoke_user_sessions(user_id)
+    except Exception as exc:
+        logger.debug(f"Failed to invoke unrevoke_user_sessions for {user_id}: {exc}")
+
+
 def is_user_deleted(user_id: str) -> bool:
     """Check whether a user account has been marked deleted."""
     if not user_id:
@@ -297,107 +319,139 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
             logger.warning(f"Failed to list competitors for user {user_id}: {exc}")
 
     # Step 2: Stop background tasks and mark entities deleted before starting DB deletions
-    revoked_tasks = cancel_tasks_for_user(
-        user_id=user_id,
-        product_ids=product_ids,
-        competitor_ids=competitor_ids,
-    )
-    summary["tasks_revoked"] = len(revoked_tasks)
+    try:
+        revoked_tasks = cancel_tasks_for_user(
+            user_id=user_id,
+            product_ids=product_ids,
+            competitor_ids=competitor_ids,
+        )
+        summary["tasks_revoked"] = len(revoked_tasks)
 
-    # Step 3: Delete dependent child tables first, then parents to guarantee zero orphaned rows
+        # Step 3: Delete dependent child tables first, then parents to guarantee zero orphaned rows
 
-    # 3a. price_history (grandchild table of products via competitors)
-    if competitor_ids:
+        # 3a. price_history (grandchild table of products via competitors)
+        if competitor_ids:
+            try:
+                client.table("price_history").delete().in_("competitor_id", competitor_ids).execute()
+                summary["tables_cleaned"].append("price_history")
+            except Exception as exc:
+                logger.error(f"Failed to delete price_history for user {user_id}: {exc}")
+                raise
+
+        # 3b. competitors (child table of products)
+        if product_ids:
+            try:
+                client.table("competitors").delete().in_("product_id", product_ids).execute()
+                summary["tables_cleaned"].append("competitors")
+            except Exception as exc:
+                logger.error(f"Failed to delete competitors for user {user_id}: {exc}")
+                raise
+
+        # 3c. insights (child table of products)
+        if product_ids:
+            try:
+                client.table("insights").delete().in_("product_id", product_ids).execute()
+                summary["tables_cleaned"].append("insights")
+            except Exception as exc:
+                logger.error(f"Failed to delete insights for user {user_id}: {exc}")
+                raise
+
+        # 3d. tracking_jobs (direct user table and optional product group relation)
         try:
-            client.table("price_history").delete().in_("competitor_id", competitor_ids).execute()
-            summary["tables_cleaned"].append("price_history")
+            client.table("tracking_jobs").delete().eq("user_id", user_id).execute()
+            summary["tables_cleaned"].append("tracking_jobs")
         except Exception as exc:
-            logger.error(f"Failed to delete price_history for user {user_id}: {exc}")
+            logger.error(f"Failed to delete tracking_jobs for user {user_id}: {exc}")
             raise
 
-    # 3b. competitors (child table of products)
-    if product_ids:
+        # 3e. pending_alerts (direct user table referencing products and competitors)
         try:
-            client.table("competitors").delete().in_("product_id", product_ids).execute()
-            summary["tables_cleaned"].append("competitors")
+            client.table("pending_alerts").delete().eq("user_id", user_id).execute()
+            summary["tables_cleaned"].append("pending_alerts")
         except Exception as exc:
-            logger.error(f"Failed to delete competitors for user {user_id}: {exc}")
+            logger.error(f"Failed to delete pending_alerts for user {user_id}: {exc}")
             raise
 
-    # 3c. insights (child table of products)
-    if product_ids:
+        # 3f. alert_history (direct user table recording sent digests)
         try:
-            client.table("insights").delete().in_("product_id", product_ids).execute()
-            summary["tables_cleaned"].append("insights")
+            client.table("alert_history").delete().eq("user_id", user_id).execute()
+            summary["tables_cleaned"].append("alert_history")
         except Exception as exc:
-            logger.error(f"Failed to delete insights for user {user_id}: {exc}")
+            logger.error(f"Failed to delete alert_history for user {user_id}: {exc}")
             raise
 
-    # 3d. tracking_jobs (direct user table and optional product group relation)
-    try:
-        client.table("tracking_jobs").delete().eq("user_id", user_id).execute()
-        summary["tables_cleaned"].append("tracking_jobs")
-    except Exception as exc:
-        logger.error(f"Failed to delete tracking_jobs for user {user_id}: {exc}")
-        raise
+        # 3g. user_alert_settings (direct user table holding notification credentials & webhook secret)
+        try:
+            client.table("user_alert_settings").delete().eq("user_id", user_id).execute()
+            summary["tables_cleaned"].append("user_alert_settings")
+        except Exception as exc:
+            logger.error(f"Failed to delete user_alert_settings for user {user_id}: {exc}")
+            raise
 
-    # 3e. pending_alerts (direct user table referencing products and competitors)
-    try:
-        client.table("pending_alerts").delete().eq("user_id", user_id).execute()
-        summary["tables_cleaned"].append("pending_alerts")
-    except Exception as exc:
-        logger.error(f"Failed to delete pending_alerts for user {user_id}: {exc}")
-        raise
+        # 3h. products (direct user table)
+        try:
+            client.table("products").delete().eq("user_id", user_id).execute()
+            summary["tables_cleaned"].append("products")
+        except Exception as exc:
+            logger.error(f"Failed to delete products for user {user_id}: {exc}")
+            raise
 
-    # 3f. alert_history (direct user table recording sent digests)
-    try:
-        client.table("alert_history").delete().eq("user_id", user_id).execute()
-        summary["tables_cleaned"].append("alert_history")
-    except Exception as exc:
-        logger.error(f"Failed to delete alert_history for user {user_id}: {exc}")
-        raise
-
-    # 3g. user_alert_settings (direct user table holding notification credentials & webhook secret)
-    try:
-        client.table("user_alert_settings").delete().eq("user_id", user_id).execute()
-        summary["tables_cleaned"].append("user_alert_settings")
-    except Exception as exc:
-        logger.error(f"Failed to delete user_alert_settings for user {user_id}: {exc}")
-        raise
-
-    # 3h. products (direct user table)
-    try:
-        client.table("products").delete().eq("user_id", user_id).execute()
-        summary["tables_cleaned"].append("products")
-    except Exception as exc:
-        logger.error(f"Failed to delete products for user {user_id}: {exc}")
-        raise
-
-    # Step 4: Remove identity from Supabase Auth admin API if accessible
-    try:
+        # Step 4: Remove identity from Supabase Auth admin API (required and verified)
         admin_auth = getattr(getattr(client, "auth", None), "admin", None)
-        if admin_auth and hasattr(admin_auth, "delete_user"):
-            admin_auth.delete_user(user_id)
-            summary["tables_cleaned"].append("auth.users")
-        else:
-            logger.debug("Admin auth delete_user not supported on current client instance")
-    except Exception as exc:
-        logger.warning(f"Could not delete auth user {user_id} via Supabase admin API: {exc}")
+        if not admin_auth or not callable(getattr(admin_auth, "delete_user", None)):
+            error_msg = f"Supabase Auth admin deletion API is unavailable for user {user_id}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
-    # Step 5: Invalidate dashboard cache immediately
-    try:
-        invalidate_dashboard_cache(user_id)
-    except Exception as exc:
-        logger.debug(f"Dashboard cache invalidation error for {user_id}: {exc}")
+        try:
+            delete_res = admin_auth.delete_user(user_id)
+        except Exception as exc:
+            logger.error(f"Failed to delete auth user {user_id} via Supabase admin API: {exc}")
+            raise RuntimeError(f"Could not delete auth user {user_id} via Supabase admin API: {exc}") from exc
 
-    # Step 6: Revoke active session tokens
-    try:
-        from app.core.security import revoke_user_sessions
-        revoke_user_sessions(user_id)
-    except Exception as exc:
-        logger.debug(f"Session revocation failed for {user_id}: {exc}")
+        if delete_res is False:
+            error_msg = f"Supabase Auth admin deletion was not confirmed for user {user_id}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
-    return summary
+        if isinstance(delete_res, dict):
+            if delete_res.get("error"):
+                error_msg = f"Supabase Auth admin deletion error: {delete_res.get('error')}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+            if delete_res.get("success") is False or delete_res.get("deleted") is False:
+                error_msg = f"Supabase Auth admin deletion was not confirmed for user {user_id}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+        elif hasattr(delete_res, "error") and getattr(delete_res, "error", None):
+            error_msg = f"Supabase Auth admin deletion error: {getattr(delete_res, 'error')}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        elif hasattr(delete_res, "status_code") and getattr(delete_res, "status_code", 200) >= 400:
+            error_msg = f"Supabase Auth admin deletion failed with status {delete_res.status_code}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        summary["tables_cleaned"].append("auth.users")
+
+        # Step 5: Invalidate dashboard cache immediately
+        try:
+            invalidate_dashboard_cache(user_id)
+        except Exception as exc:
+            logger.debug(f"Dashboard cache invalidation error for {user_id}: {exc}")
+
+        # Step 6: Revoke active session tokens
+        try:
+            from app.core.security import revoke_user_sessions
+            revoke_user_sessions(user_id)
+        except Exception as exc:
+            logger.debug(f"Session revocation failed for {user_id}: {exc}")
+
+        return summary
+
+    except Exception:
+        unmark_user_deleted(user_id)
+        raise
 
 
 def clear_account_deletion_state() -> None:

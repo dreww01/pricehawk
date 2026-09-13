@@ -62,6 +62,24 @@ def is_session_revoked(user_id: str) -> bool:
     return False
 
 
+def unrevoke_user_sessions(user_id: str) -> None:
+    """
+    Restore session validity if an operation such as account deletion fails,
+    allowing the user to retry authenticated requests.
+    """
+    if not user_id:
+        return
+    with _revocation_lock:
+        _revoked_users.discard(user_id)
+    try:
+        from app.services.dashboard_cache import get_dashboard_cache
+        redis_conn = get_dashboard_cache()._get_redis()
+        if redis_conn:
+            redis_conn.delete(f"revoked_user:{user_id}")
+    except Exception as exc:
+        logger.debug(f"Failed to clear session revocation in Redis for user {user_id}: {exc}")
+
+
 def clear_revoked_users() -> None:
     """Clear in-memory revoked users set (primarily for test cleanup)."""
     with _revocation_lock:
