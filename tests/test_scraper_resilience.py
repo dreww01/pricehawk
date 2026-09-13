@@ -77,6 +77,23 @@ ACCESS_DENIED_HTML = """
 </html>
 """
 
+CLOUDFLARE_ANALYTICS_PRICE_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Test Store - Cool Widget</title></head>
+<body>
+    <div class="product-single">
+        <h1 class="product-title">Cool Widget</h1>
+        <div class="price">
+            <span class="sale-price">$49.99</span>
+        </div>
+    </div>
+    <!-- Cloudflare Web Analytics beacon markup -->
+    <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "abcd1234efgh"}'></script>
+</body>
+</html>
+"""
+
 
 # ===========================================================================
 # 1. Automatic Exponential Backoff Retries Tests
@@ -361,6 +378,54 @@ async def test_failure_status_bot_challenge_detection():
     assert result.status == "failed"
     assert result.failure_reason == ScrapeFailureReason.BLOCKED
     assert "Access blocked" in result.error_message
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_analytics_beacon_does_not_block_valid_product_page():
+    """Valid product page with Cloudflare analytics beacon markup is not misclassified as blocked."""
+    def handler(request: httpx.Request):
+        return httpx.Response(200, text=CLOUDFLARE_ANALYTICS_PRICE_HTML, request=request)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with patch("app.services.scraper_service.fetch_with_playwright", return_value=None):
+            result = await scrape_url(
+                "https://store.example.com/products/widget",
+                max_retries=1,
+                base_delay=0.001,
+                crawl_delay=False,
+                client=client,
+            )
+
+    assert result.status == "success"
+    assert result.price == Decimal("49.99")
+    assert result.failure_reason is None
+
+
+def test_is_bot_challenge_distinguishes_analytics_from_real_challenges():
+    """is_bot_challenge should return False for analytics beacon alone, but True for real challenge markers."""
+    # Analytics beacon alone on ordinary product page
+    assert not is_bot_challenge(CLOUDFLARE_ANALYTICS_PRICE_HTML)
+
+    # Real challenges
+    assert is_bot_challenge(CLOUDFLARE_BLOCKED_HTML)
+    assert is_bot_challenge(ACCESS_DENIED_HTML)
+
+    # Challenge page with challenge marker AND beacon
+    challenge_with_beacon = """
+    <html><head><title>Just a moment...</title></head>
+    <body><script data-cf-beacon='{"token": "xyz"}'></script>
+    <div class="cf-browser-verification">Verifying...</div></body></html>
+    """
+    assert is_bot_challenge(challenge_with_beacon)
+
+    # Challenge page with challenge-platform script and beacon
+    challenge_platform_with_beacon = """
+    <html><head><title>Verify</title></head>
+    <body><script src="/cdn-cgi/challenge-platform/scripts/orchestration.js"></script>
+    <script data-cf-beacon='{"token": "xyz"}'></script></body></html>
+    """
+    assert is_bot_challenge(challenge_platform_with_beacon)
 
 
 @pytest.mark.asyncio
