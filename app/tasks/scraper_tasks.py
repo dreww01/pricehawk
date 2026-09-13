@@ -256,6 +256,13 @@ def scrape_product_manual(self, product_id: str) -> dict:
 
     logger.info(f"Manual scrape completed for product {product_id}: {total} competitors")
 
+    # Invalidate dashboard cache for product owner
+    try:
+        from app.services.dashboard_cache import invalidate_dashboard_cache_for_product
+        invalidate_dashboard_cache_for_product(product_id)
+    except Exception as exc:
+        logger.debug(f"Failed to invalidate dashboard cache for product {product_id}: {exc}")
+
     return {"status": "completed", "results": results}
 
 

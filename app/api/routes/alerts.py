@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.services.email_service import EmailService
 from app.services.digest_service import DigestService
+from app.services.dashboard_cache import invalidate_dashboard_cache
 
 
 class AcceptCurrencyRequest(BaseModel):
@@ -442,6 +443,8 @@ async def accept_currency(
             "included_in_digest": True
         }).eq("competitor_id", competitor_id).eq("alert_type", "currency_changed").execute()
 
+        invalidate_dashboard_cache(current_user.id)
+
         return {
             "success": True,
             "message": f"Now tracking prices in {request.currency}",
@@ -507,6 +510,9 @@ async def accept_all_currencies(
                 }).eq("id", alert["id"]).execute()
 
                 updated_count += 1
+
+        if updated_count > 0:
+            invalidate_dashboard_cache(current_user.id)
 
         return {
             "success": True,

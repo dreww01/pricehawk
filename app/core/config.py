@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Redis/Celery
     redis_url: str = "redis://localhost:6379/0"
 
+    # Dashboard Caching
+    dashboard_cache_ttl_seconds: int = 60
+    dashboard_cache_stats_ttl: int | None = None
+    dashboard_cache_activity_ttl: int | None = None
+    dashboard_cache_products_ttl: int | None = None
+    dashboard_cache_enabled: bool = True
+
     # AI (Groq API)
     groq_api_key: str | None = None
 

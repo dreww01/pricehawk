@@ -39,6 +39,16 @@ def mock_supabase_client():
     return mock
 
 
+@pytest.fixture(autouse=True)
+def reset_dashboard_cache():
+    """Ensure dashboard cache is cleared before and after each test."""
+    from app.services.dashboard_cache import get_dashboard_cache
+    cache = get_dashboard_cache()
+    cache.clear_all()
+    yield
+    cache.clear_all()
+
+
 @pytest.fixture
 def auth_headers():
     """Return mock auth headers for testing."""

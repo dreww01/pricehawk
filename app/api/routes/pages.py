@@ -27,6 +27,7 @@ from app.core.security import (
 )
 from app.db.database import get_supabase_client
 from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
+from app.services.dashboard_cache import get_dashboard_cache
 
 
 router = APIRouter(tags=["pages"])
@@ -385,8 +386,20 @@ async def get_dashboard_stats(
 
     Returns counts for products, competitors, pending alerts, and recent activity.
     Supports either Authorization header or session cookie.
+    Cached for high-frequency views with short, configurable expiration.
     """
     current_user, token = auth
+    cache = get_dashboard_cache()
+    cached_stats = cache.get_stats_data(current_user.id)
+    if cached_stats is not None:
+        return JSONResponse(
+            cached_stats,
+            headers={
+                "X-Cache": "HIT",
+                "Cache-Control": f"private, max-age={cache.get_stats_ttl()}",
+            },
+        )
+
     client = get_supabase_client(token)
 
     # Get products count
@@ -427,12 +440,21 @@ async def get_dashboard_stats(
     )
     insights_count = insights_result.count or 0
 
-    return JSONResponse({
+    stats = {
         "products": products_count,
         "competitors": competitors_count,
         "alerts": alerts_count,
-        "insights": insights_count
-    })
+        "insights": insights_count,
+    }
+    cache.set_stats_data(current_user.id, stats)
+
+    return JSONResponse(
+        stats,
+        headers={
+            "X-Cache": "MISS",
+            "Cache-Control": f"private, max-age={cache.get_stats_ttl()}",
+        },
+    )
 
 
 @router.get("/api/dashboard/activity")
@@ -444,8 +466,20 @@ async def get_dashboard_activity(
 
     Returns the last 10 significant price changes.
     Supports either Authorization header or session cookie.
+    Cached for high-frequency views with short, configurable expiration.
     """
     current_user, token = auth
+    cache = get_dashboard_cache()
+    cached_activity = cache.get_activity_data(current_user.id)
+    if cached_activity is not None:
+        return JSONResponse(
+            {"activity": cached_activity},
+            headers={
+                "X-Cache": "HIT",
+                "Cache-Control": f"private, max-age={cache.get_activity_ttl()}",
+            },
+        )
+
     client = get_supabase_client(token)
 
     # Get recent pending alerts as activity
@@ -475,7 +509,15 @@ async def get_dashboard_activity(
             "detected_at": row["detected_at"]
         })
 
-    return JSONResponse({"activity": activity})
+    cache.set_activity_data(current_user.id, activity)
+
+    return JSONResponse(
+        {"activity": activity},
+        headers={
+            "X-Cache": "MISS",
+            "Cache-Control": f"private, max-age={cache.get_activity_ttl()}",
+        },
+    )
 
 
 @router.get("/api/dashboard/products")
@@ -487,8 +529,20 @@ async def get_dashboard_products(
 
     Returns the 5 most recently created products with competitor counts.
     Supports either Authorization header or session cookie.
+    Cached for high-frequency views with short, configurable expiration.
     """
     current_user, token = auth
+    cache = get_dashboard_cache()
+    cached_products = cache.get_products_data(current_user.id)
+    if cached_products is not None:
+        return JSONResponse(
+            {"products": cached_products},
+            headers={
+                "X-Cache": "HIT",
+                "Cache-Control": f"private, max-age={cache.get_products_ttl()}",
+            },
+        )
+
     client = get_supabase_client(token)
 
     # Get recent products with competitor count
@@ -518,7 +572,26 @@ async def get_dashboard_products(
             "competitor_count": comp_result.count or 0
         })
 
-    return JSONResponse({"products": products})
+    cache.set_products_data(current_user.id, products)
+
+    return JSONResponse(
+        {"products": products},
+        headers={
+            "X-Cache": "MISS",
+            "Cache-Control": f"private, max-age={cache.get_products_ttl()}",
+        },
+    )
+
+
+@router.get("/api/dashboard/cache/metrics")
+async def get_dashboard_cache_metrics(
+    auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
+):
+    """
+    Get dashboard cache metrics including hit rates, hits, misses, and invalidations.
+    """
+    cache = get_dashboard_cache()
+    return JSONResponse(cache.get_metrics())
 
 
 @router.get("/api/insights")

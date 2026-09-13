@@ -131,6 +131,12 @@ class AlertService:
                 }
                 sb.table("pending_alerts").insert(alert_data).execute()
 
+                try:
+                    from app.services.dashboard_cache import invalidate_dashboard_cache
+                    invalidate_dashboard_cache(user_id)
+                except Exception as exc:
+                    logger.debug(f"Failed to invalidate cache after alert creation: {exc}")
+
                 logger.warning(
                     f"Currency mismatch for competitor {competitor_id}: "
                     f"{old_currency} → {currency}"
@@ -238,6 +244,12 @@ class AlertService:
             }
 
             sb.table("pending_alerts").insert(alert_data).execute()
+
+            try:
+                from app.services.dashboard_cache import invalidate_dashboard_cache
+                invalidate_dashboard_cache(user_id)
+            except Exception as exc:
+                logger.debug(f"Failed to invalidate cache after alert creation: {exc}")
 
             return {
                 "alert_created": True,

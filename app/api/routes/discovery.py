@@ -13,6 +13,7 @@ from app.db.models import (
     TrackProductsResponse,
 )
 from app.services.store_discovery import discover_products
+from app.services.dashboard_cache import invalidate_dashboard_cache
 
 
 router = APIRouter(prefix="/stores", tags=["discovery"])
@@ -124,6 +125,9 @@ async def track_products(
             }
             service_client.table("price_history").insert(price_data).execute()
             prices_stored += 1
+
+    # Invalidate dashboard cache for the current user
+    invalidate_dashboard_cache(current_user.id)
 
     return TrackProductsResponse(
         group_id=group_id,

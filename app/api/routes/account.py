@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr
 
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_supabase_client, get_supabase_client_with_session
+from app.services.dashboard_cache import invalidate_dashboard_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/account", tags=["account"])
@@ -127,6 +128,9 @@ async def delete_account(
 
         # Delete pending alerts
         client.table("pending_alerts").delete().eq("user_id", current_user.id).execute()
+
+        # Invalidate dashboard cache
+        invalidate_dashboard_cache(current_user.id)
 
         return {"message": "Account data deleted successfully. Please log out."}
 

@@ -992,6 +992,13 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             "alert_result": None,
         }
 
+    # Automatically invalidate dashboard cache when new price scrapes are persisted
+    try:
+        from app.services.dashboard_cache import invalidate_dashboard_cache_for_competitor
+        invalidate_dashboard_cache_for_competitor(competitor_id, client=sb)
+    except Exception as e:
+        logger.debug(f"Failed to invalidate dashboard cache for competitor {competitor_id}: {e}")
+
     return {
         "scrape_result": {
             "status": scrape_result.status,
