@@ -283,6 +283,22 @@ def is_product_deleted(product_id: str) -> bool:
     return False
 
 
+def unmark_product_deleted(product_id: str) -> None:
+    """Clear deletion marker for a product if deletion fails or is rolled back."""
+    if not product_id:
+        return
+
+    with _account_lock:
+        _deleted_products.discard(product_id)
+
+    redis_conn = _get_redis_conn()
+    if redis_conn:
+        try:
+            redis_conn.delete(f"deleted_product:{product_id}")
+        except Exception as exc:
+            logger.debug(f"Failed to clear deleted_product in Redis for {product_id}: {exc}")
+
+
 def cancel_tasks_for_user(
     user_id: str,
     product_ids: list[str] | None = None,
@@ -403,6 +419,7 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
         "tasks_revoked": 0,
         "tables_cleaned": [],
     }
+    affected_product_ids: list[str] = []
 
     try:
         # Mark deletion in progress to guard background tasks
@@ -421,6 +438,12 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
         except Exception as exc:
             logger.error(f"Failed to list products for user {user_id}: {exc}")
             raise RuntimeError(f"Database error discovering products for {user_id}: {exc}") from exc
+
+        # Track product IDs affected by this deletion attempt, excluding any that were
+        # already marked deleted outside this operation.
+        affected_product_ids = [
+            pid for pid in product_ids if not is_product_deleted(pid)
+        ]
 
         competitor_ids: list[str] = []
         if product_ids:
@@ -588,6 +611,26 @@ def delete_user_account(user_id: str, client: Any = None) -> dict[str, Any]:
     except Exception:
         clear_deletion_in_progress(user_id)
         unmark_user_deleted(user_id)
+
+        # Restore deletion markers for surviving products that still belong to the user
+        if affected_product_ids and "products" not in summary.get("tables_cleaned", []):
+            try:
+                surv_res = client.table("products").select("id").eq("user_id", user_id).execute()
+                if surv_res and getattr(surv_res, "data", None) is not None:
+                    current_db_pids = {
+                        p["id"] for p in surv_res.data
+                        if isinstance(p, dict) and "id" in p and p["id"]
+                    }
+                    surviving_pids = [pid for pid in affected_product_ids if pid in current_db_pids]
+                else:
+                    surviving_pids = list(affected_product_ids)
+            except Exception as surv_exc:
+                logger.debug(f"Failed to query surviving products during rollback for {user_id}: {surv_exc}")
+                surviving_pids = list(affected_product_ids)
+
+            for pid in surviving_pids:
+                unmark_product_deleted(pid)
+
         raise
 
 

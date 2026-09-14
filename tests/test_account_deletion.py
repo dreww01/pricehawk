@@ -21,6 +21,7 @@ from app.services.account_service import (
     mark_product_deleted,
     mark_user_deleted,
     register_active_scrape_task,
+    unmark_product_deleted,
     unregister_active_scrape_task,
 )
 from app.tasks.scraper_tasks import scrape_all_products, scrape_product_manual, scrape_single_competitor
@@ -881,9 +882,10 @@ def test_deletion_fails_on_intermediate_table_cleanup_and_allows_safe_retry(clie
         resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
         assert resp1.status_code == 400
 
-        # User is NOT locked out
+        # User is NOT locked out and product is not marked deleted
         assert not is_session_revoked(user_id)
         assert not is_user_deleted(user_id)
+        assert not is_product_deleted(prod_id)
 
         # Database recovers
         db.table = orig_table
@@ -897,6 +899,7 @@ def test_deletion_fails_on_intermediate_table_cleanup_and_allows_safe_retry(clie
         assert len(db.tables["insights"]) == 0
         assert is_user_deleted(user_id)
         assert is_session_revoked(user_id)
+        assert is_product_deleted(prod_id)
 
 
 def test_deletion_fails_on_user_table_cleanup_and_allows_safe_retry(client: TestClient):
@@ -933,9 +936,10 @@ def test_deletion_fails_on_user_table_cleanup_and_allows_safe_retry(client: Test
         resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
         assert resp1.status_code == 400
 
-        # User is NOT locked out
+        # User is NOT locked out and product is not marked deleted
         assert not is_session_revoked(user_id)
         assert not is_user_deleted(user_id)
+        assert not is_product_deleted(prod_id)
 
         # Database recovers
         db.table = orig_table
@@ -947,6 +951,129 @@ def test_deletion_fails_on_user_table_cleanup_and_allows_safe_retry(client: Test
         assert len(db.tables["products"]) == 0
         assert is_user_deleted(user_id)
         assert is_session_revoked(user_id)
+        assert is_product_deleted(prod_id)
+
+
+def test_intermediate_cleanup_failure_restores_surviving_product_markers_and_allows_scrape_and_retry(client: TestClient):
+    """
+    REV-04: When account deletion fails during intermediate cleanup (e.g. competitors table delete):
+    - Deletion markers are restored for surviving products belonging to the user.
+    - Both in-memory and Redis markers are cleared for the surviving products.
+    - Markers for products that were independently deleted outside this operation are NOT cleared.
+    - Surviving products are no longer considered deleted and can be scraped again before retry.
+    - A subsequent account-deletion retry completes successfully and deletes all products.
+    """
+    user_id = "user-rev04-1"
+    email = "rev04@example.com"
+    token = _create_token(user_id=user_id, email=email)
+
+    db = MockSupabaseDB()
+    surviving_prod_id = "prod-rev04-surv"
+    indep_prod_id = "prod-rev04-indep"
+    comp_id = "comp-rev04-1"
+
+    # User owns two products: one surviving active product, and one independently deleted
+    db.tables["products"] = [
+        {"id": surviving_prod_id, "user_id": user_id, "product_name": "Surviving Product", "is_active": True},
+        {"id": indep_prod_id, "user_id": user_id, "product_name": "Independently Deleted Product", "is_active": False},
+    ]
+    db.tables["competitors"] = [
+        {"id": comp_id, "product_id": surviving_prod_id, "url": "https://competitor.com/item", "retailer_name": "Store"}
+    ]
+
+    # Pre-mark indep_prod_id as deleted outside this account-deletion operation
+    mark_product_deleted(indep_prod_id)
+    assert is_product_deleted(indep_prod_id)
+    assert not is_product_deleted(surviving_prod_id)
+
+    # Setup a mock Redis client to track key operations across account_service
+    mock_redis_storage = {
+        f"deleted_product:{indep_prod_id}": "1"
+    }
+
+    mock_redis = MagicMock()
+    mock_redis.get.side_effect = lambda k: mock_redis_storage.get(k)
+    def mock_setex(k, ttl, v):
+        mock_redis_storage[k] = v
+    mock_redis.setex.side_effect = mock_setex
+    def mock_delete(*keys):
+        for k in keys:
+            mock_redis_storage.pop(k, None)
+    mock_redis.delete.side_effect = mock_delete
+    mock_redis.smembers.return_value = set()
+
+    # Intermediate cleanup failure on competitors table
+    orig_table = db.table
+    def failing_comp_table(table_name: str):
+        if table_name == "competitors":
+            mock_q = MockTableQuery(table_name, db)
+            def failing_execute():
+                if mock_q._action == "delete":
+                    raise RuntimeError("Competitors deletion failed midway")
+                return db._execute_table(mock_q)
+            mock_q.execute = failing_execute
+            return mock_q
+        return orig_table(table_name)
+
+    db.table = failing_comp_table
+
+    with patch("app.db.database.get_supabase_client", return_value=db), \
+         patch("app.services.account_service.get_supabase_client", return_value=db), \
+         patch("app.tasks.scraper_tasks.get_supabase_client", return_value=db), \
+         patch("app.services.account_service._get_redis_conn", return_value=mock_redis):
+
+        # 1. First account deletion attempt fails during intermediate table cleanup
+        resp1 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp1.status_code == 400
+
+        # 2. User markers are cleared and session is intact
+        assert not is_user_deleted(user_id)
+        assert not is_session_revoked(user_id)
+
+        # 3. Surviving product marker is restored in both memory and Redis
+        assert not is_product_deleted(surviving_prod_id)
+        assert f"deleted_product:{surviving_prod_id}" not in mock_redis_storage
+
+        # 4. Independently deleted product marker was NOT cleared (preserved in memory and Redis)
+        assert is_product_deleted(indep_prod_id)
+        assert f"deleted_product:{indep_prod_id}" in mock_redis_storage
+
+        # 5. Verify surviving product can be scraped again before retry
+        mock_scrape_url = AsyncMock()
+        mock_scrape_url.return_value = MagicMock(
+            price=Decimal("15.99"),
+            currency="USD",
+            status="success",
+            error_message=None,
+            failure_reason=None,
+            retry_count=0,
+        )
+
+        with patch("app.tasks.scraper_tasks.scrape_url", mock_scrape_url), \
+             patch("app.tasks.scraper_tasks.set_scrape_progress"):
+
+            # Scraping the surviving product succeeds and executes scrape_url
+            scrape_res = scrape_product_manual(surviving_prod_id)
+            assert scrape_res["status"] != "cancelled"
+            mock_scrape_url.assert_called_once()
+
+            # In contrast, attempting to scrape the independently deleted product is blocked
+            mock_scrape_url.reset_mock()
+            indep_scrape_res = scrape_product_manual(indep_prod_id)
+            assert indep_scrape_res["status"] == "cancelled"
+            mock_scrape_url.assert_not_called()
+
+        # 6. Database recovers and subsequent retry completes successfully
+        db.table = orig_table
+        resp2 = client.delete("/api/account/delete", headers={"Authorization": f"Bearer {token}"})
+        assert resp2.status_code == 200
+
+        # All tables cleaned and account deletion finalized
+        assert len(db.tables["products"]) == 0
+        assert len(db.tables["competitors"]) == 0
+        assert is_user_deleted(user_id)
+        assert is_session_revoked(user_id)
+        assert is_product_deleted(surviving_prod_id)
 
 
 # ============================================================================
