@@ -4,12 +4,13 @@ Change password, change email, and account settings.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
-from app.core.security import get_current_user, CurrentUser
+from app.core.security import get_current_user, CurrentUser, delete_access_token_cookie
 from app.db.database import get_supabase_client, get_supabase_client_with_session
+from app.services.account_service import delete_user_account
 from app.services.dashboard_cache import invalidate_dashboard_cache
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,7 @@ async def get_account_settings(
 
 @router.delete("/delete")
 async def delete_account(
+    response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     current_user: CurrentUser = Depends(get_current_user)
 ):
@@ -117,24 +119,17 @@ async def delete_account(
     Delete user account and all associated data.
     This action is irreversible.
     """
-    client = get_supabase_client(credentials.credentials)
-
     try:
-        # Delete user's products (cascades to competitors, price_history, insights)
-        client.table("products").delete().eq("user_id", current_user.id).execute()
-        # Invalidate dashboard cache immediately once products deletion commits
-        invalidate_dashboard_cache(current_user.id)
+        # Systematically purge all user data, credentials, tasks, and sessions
+        result = delete_user_account(current_user.id)
 
-        try:
-            # Delete user's alert settings
-            client.table("user_alert_settings").delete().eq("user_id", current_user.id).execute()
+        # Invalidate active session cookie immediately
+        delete_access_token_cookie(response)
 
-            # Delete pending alerts
-            client.table("pending_alerts").delete().eq("user_id", current_user.id).execute()
-        finally:
-            invalidate_dashboard_cache(current_user.id)
-
-        return {"message": "Account data deleted successfully. Please log out."}
+        return {
+            "message": "Account data deleted successfully. Please log out.",
+            "details": result,
+        }
 
     except Exception as e:
         logger.exception(f"Delete account error for {current_user.email}: {e}")

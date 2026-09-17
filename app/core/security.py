@@ -1,5 +1,7 @@
 from functools import lru_cache
+import logging
 import posixpath
+import threading
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -13,6 +15,76 @@ from starlette.responses import Response
 from typing import NamedTuple
 
 from app.core.config import get_settings, Settings
+
+logger = logging.getLogger(__name__)
+
+# In-memory revocation tracking fallback
+_revoked_users: set[str] = set()
+_revocation_lock = threading.Lock()
+
+
+def revoke_user_sessions(user_id: str, ttl_seconds: int = 86400) -> None:
+    """
+    Revoke all active sessions and tokens for a user.
+    Records revocation in Redis (with TTL) and in process memory fallback.
+    """
+    if not user_id:
+        return
+    with _revocation_lock:
+        _revoked_users.add(user_id)
+    try:
+        from app.services.dashboard_cache import get_dashboard_cache
+        redis_conn = get_dashboard_cache()._get_redis()
+        if redis_conn:
+            redis_conn.setex(f"revoked_user:{user_id}", ttl_seconds, "1")
+    except Exception as exc:
+        logger.debug(f"Failed to record session revocation in Redis for user {user_id}: {exc}")
+
+
+def is_session_revoked(user_id: str) -> bool:
+    """Check whether a user's sessions have been revoked."""
+    if not user_id:
+        return False
+    with _revocation_lock:
+        if user_id in _revoked_users:
+            return True
+    try:
+        from app.services.dashboard_cache import get_dashboard_cache
+        redis_conn = get_dashboard_cache()._get_redis()
+        if redis_conn:
+            val = redis_conn.get(f"revoked_user:{user_id}")
+            if val:
+                with _revocation_lock:
+                    _revoked_users.add(user_id)
+                return True
+    except Exception as exc:
+        logger.debug(f"Failed to query session revocation in Redis for user {user_id}: {exc}")
+    return False
+
+
+def unrevoke_user_sessions(user_id: str) -> None:
+    """
+    Restore session validity if an operation such as account deletion fails,
+    allowing the user to retry authenticated requests.
+    """
+    if not user_id:
+        return
+    with _revocation_lock:
+        _revoked_users.discard(user_id)
+    try:
+        from app.services.dashboard_cache import get_dashboard_cache
+        redis_conn = get_dashboard_cache()._get_redis()
+        if redis_conn:
+            redis_conn.delete(f"revoked_user:{user_id}")
+    except Exception as exc:
+        logger.debug(f"Failed to clear session revocation in Redis for user {user_id}: {exc}")
+
+
+def clear_revoked_users() -> None:
+    """Clear in-memory revoked users set (primarily for test cleanup)."""
+    with _revocation_lock:
+        _revoked_users.clear()
+
 
 
 security = HTTPBearer(auto_error=False)
@@ -261,6 +333,13 @@ def verify_token(
             detail="Invalid token payload",
         )
 
+    if is_session_revoked(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session invalidated or account deleted",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return CurrentUser(
         id=user_id,
         email=payload.get("email"),
@@ -287,6 +366,9 @@ async def verify_token_string(token: str) -> CurrentUser:
     user_id = payload.get("sub")
     if not user_id:
         raise ValueError("Invalid token payload")
+
+    if is_session_revoked(user_id):
+        raise ValueError("Session invalidated or account deleted")
 
     return CurrentUser(
         id=user_id,

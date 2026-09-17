@@ -73,6 +73,13 @@ async def manual_scrape(
     # Dispatch to Celery (non-blocking)
     task = scrape_product_manual.delay(product_id)
 
+    # Register active task for revocation guarantees upon account or product deletion
+    try:
+        from app.services.account_service import register_active_scrape_task
+        register_active_scrape_task(current_user.id, product_id, task.id)
+    except Exception:
+        pass
+
     return ScrapeTaskResponse(
         task_id=task.id,
         status="queued",
