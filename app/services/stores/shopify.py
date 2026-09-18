@@ -14,31 +14,203 @@ class ShopifyHandler(BaseStoreHandler):
     """
 
     platform_name = "shopify"
+    platform_label = "Shopify"
 
-    async def detect(self, url: str) -> bool:
-        """Check if store is Shopify via API or HTML inspection."""
+    async def detect(self, url: str, html: str | None = None) -> bool:
+        """
+        Check if store is Shopify via API, URL patterns, or HTML inspection.
+        Recognizes classic Shopify, custom subdomains, alternative URL paths,
+        and modern headless setups (Hydrogen, Next.js Commerce, Storefront API).
+        """
+        url = (url or "").strip()
+        if url and not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
         parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
         base_url = f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip("/")
 
-        # Fast path: try /products.json API
+        self.matched_signals = []
+        self.is_headless = False
+
+        # Signal check 1: myshopify.com domain
+        if netloc.endswith("myshopify.com"):
+            self.matched_signals.append("myshopify_domain")
+            self.platform_label = "Shopify"
+            self.confidence = 0.95
+
+        # Signal check: custom commerce subdomain
+        if any(netloc.startswith(prefix) for prefix in ("shop.", "store.", "buy.", "checkout.", "products.")):
+            self.matched_signals.append("custom_subdomain")
+
+        # Signal check: alternative / classic Shopify URL patterns
+        if any(p in path for p in ("/products/", "/collections/")) or path.endswith(("/products", "/collections")):
+            self.matched_signals.append("shopify_url_pattern")
+
+        # If HTML is provided directly, inspect it first without network I/O
+        if html:
+            if self._inspect_shopify_html(html):
+                if "myshopify_domain" in self.matched_signals:
+                    self.confidence = max(self.confidence, 0.95)
+                return True
+            if "myshopify_domain" in self.matched_signals:
+                self.platform_label = "Shopify"
+                self.confidence = 0.95
+                return True
+            return False
+
+        # Fast path via /products.json API (classic Shopify)
+        client = await self._get_client()
+        urls_to_try = [f"{base_url}/products.json?limit=1"]
+        # If there's a subpath (e.g. /uk, /shop, /en-us), also probe subpath
+        if path and not path.startswith("/products"):
+            subpath_candidate = path.split("/products")[0] if "/products" in path else path
+            if subpath_candidate and subpath_candidate != "/":
+                urls_to_try.append(f"{base_url}{subpath_candidate}/products.json?limit=1")
+
+        for test_url in urls_to_try:
+            try:
+                response = await client.get(test_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict) and "products" in data:
+                        self.matched_signals.append("products_json_api")
+                        self.confidence = 0.98
+                        self.platform_label = "Shopify"
+                        self.is_headless = False
+                        return True
+            except Exception:
+                pass
+
+        # Storefront GraphQL API probe (Hydrogen and headless Shopify)
+        storefront_versions = ["2024-01", "unstable", "2023-10"]
+        for version in storefront_versions:
+            try:
+                api_url = f"{base_url}/api/{version}/graphql.json"
+                sf_res = await client.post(
+                    api_url,
+                    json={"query": "{ shop { name } }"},
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                )
+                if sf_res.status_code in (200, 400, 401):
+                    # Check if GraphQL response structure or shopify header exists
+                    res_text = sf_res.text.lower()
+                    if "data" in res_text or "errors" in res_text or "shopify" in sf_res.headers.get("server", "").lower():
+                        self.matched_signals.append(f"storefront_api_{version}")
+                        self.is_headless = True
+                        self.platform_label = "Shopify (Headless)"
+                        self.confidence = 0.92
+                        return True
+            except Exception:
+                pass
+
+        # HTML inspection (direct httpx fetch first, then Playwright fallback)
+        page_html = None
         try:
-            client = await self._get_client()
-            response = await client.get(f"{base_url}/products.json?limit=1")
-            if response.status_code == 200:
-                data = response.json()
-                if "products" in data:
-                    return True
+            html_res = await client.get(url)
+            if html_res.status_code == 200:
+                page_html = html_res.text
         except Exception:
             pass
 
-        # Slow path: Playwright for Cloudflare-protected sites
+        if not page_html and base_url != url:
+            try:
+                html_res = await client.get(base_url)
+                if html_res.status_code == 200:
+                    page_html = html_res.text
+            except Exception:
+                pass
+
+        if page_html:
+            if self._inspect_shopify_html(page_html):
+                return True
+
+        # Slow path with Playwright for Cloudflare/bot protected sites
         try:
             from app.services.scraper_service import fetch_with_playwright
-            html = await fetch_with_playwright(base_url)
-            if html:
-                return "cdn.shopify" in html or "Shopify.theme" in html
+            pw_html = await fetch_with_playwright(base_url)
+            if pw_html and self._inspect_shopify_html(pw_html):
+                return True
         except Exception:
             pass
+
+        # If domain was myshopify.com, return True even if API/HTML was blocked
+        if "myshopify_domain" in self.matched_signals:
+            return True
+
+        return False
+
+    def _inspect_shopify_html(self, html: str) -> bool:
+        """Inspect HTML content for Shopify and headless Shopify signatures."""
+        if not html:
+            return False
+
+        html_lower = html.lower()
+
+        # Headless frontends indicators (Hydrogen, Next.js Commerce with Shopify, Storefront API)
+        headless_signals = []
+        headless_indicators = [
+            ("hydrogen", "@shopify/hydrogen"),
+            ("hydrogen", "remix-oxygen"),
+            ("hydrogen", "oxygen-v1"),
+            ("hydrogen", "<!-- hydrogen -->"),
+            ("shopify_buy_sdk", "shopifybuy"),
+            ("shopify_buy_sdk", "shopify-buy"),
+            ("storefront_api", "storefront.shopify.com"),
+            ("storefront_api", "x-shopify-storefront-access-token"),
+            ("storefront_api", "shopify-storefront-access-token"),
+            ("storefront_api", "shopify-storefront-api"),
+            ("storefront_api", "@shopify/storefront-api-client"),
+            ("storefront_api", "shopifystorefront"),
+            ("nextjs_shopify", "nextjs-commerce"),
+            ("nextjs_shopify", "@vercel/commerce-shopify"),
+            ("shopify_dev_host", "__shopify_dev_host__"),
+            ("hydrogen_state", "__hydrogen_state__"),
+            ("gatsby_shopify", "gatsby-source-shopify"),
+        ]
+        for sig_name, marker in headless_indicators:
+            if marker in html_lower and sig_name not in headless_signals:
+                headless_signals.append(sig_name)
+
+        # Standard Shopify signatures
+        signals = []
+        if "cdn.shopify.com" in html_lower or "cdn.shopify" in html_lower:
+            signals.append("cdn.shopify.com")
+        if "shopify.theme" in html_lower or "shopify.routes" in html_lower or "window.shopify" in html_lower or "shopify = window.shopify" in html_lower:
+            signals.append("shopify_js_globals")
+        if "shopifyanalytics" in html_lower or "monorail-edge.shopifysvc.com" in html_lower or "trekkie" in html_lower:
+            signals.append("shopify_analytics")
+        if "data-shopify" in html_lower or "shopify-features" in html_lower or "shopify-digital-wallet" in html_lower or "shopify-checkout-api-token" in html_lower:
+            signals.append("shopify_meta_attributes")
+        if "shopify-payment-button" in html_lower or "shopify-section" in html_lower or "shopify-section-" in html_lower:
+            signals.append("shopify_theme_markup")
+        if "checkout.shopify.com" in html_lower or "myshopify.com" in html_lower:
+            signals.append("shopify_checkout_ref")
+        if 'name="generator" content="shopify' in html_lower or 'content="shopify' in html_lower:
+            signals.append("shopify_generator_meta")
+
+        # Check if Next.js hydration data contains Shopify references
+        if '__next_data__' in html_lower and any(k in html_lower for k in ("myshopify.com", "shopify", "storefront")):
+            if "nextjs_shopify" not in headless_signals:
+                headless_signals.append("nextjs_shopify")
+
+        all_signals = list(dict.fromkeys(headless_signals + signals))
+
+        if all_signals:
+            for s in all_signals:
+                if s not in self.matched_signals:
+                    self.matched_signals.append(s)
+
+            is_headless = bool(headless_signals)
+            self.is_headless = is_headless
+            if is_headless:
+                self.platform_label = "Shopify (Headless)"
+                self.confidence = min(0.95, 0.85 + len(all_signals) * 0.03)
+            else:
+                self.platform_label = "Shopify"
+                self.confidence = min(0.98, 0.88 + len(all_signals) * 0.02)
+            return True
 
         return False
 
@@ -70,6 +242,19 @@ class ShopifyHandler(BaseStoreHandler):
         # Fallback to Storefront API if products.json failed
         if not products:
             products = await self._fetch_via_storefront_api(base_url, max_fetch)
+
+        # Fallback to generalized web heuristics if both structured APIs yielded no products
+        if not products:
+            try:
+                from app.services.stores.generic import GenericHandler
+                generic = GenericHandler()
+                fallback_products = await generic.fetch_products(url, keyword=keyword, limit=limit)
+                if fallback_products:
+                    for p in fallback_products:
+                        p.platform = self.platform_name
+                    return fallback_products
+            except Exception:
+                pass
 
         # Filter by keyword AFTER fetching all products
         filtered = self.filter_by_keyword(products, keyword)

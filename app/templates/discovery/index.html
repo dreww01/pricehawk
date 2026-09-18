@@ -86,6 +86,7 @@
                 </h2>
                 <p class="text-sm text-gray-500 dark:text-gray-400">
                     <span id="platform-name">Unknown</span> store
+                    <span id="platform-confidence-badge" class="ml-2 px-2 py-0.5 text-xs rounded-full bg-blue-500/10 text-blue-500 hidden font-medium"></span>
                 </p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
@@ -294,7 +295,13 @@
             selectedUrls.clear();
 
             resultsCount.textContent = data.total_found || discoveredProducts.length;
-            platformName.textContent = data.platform || 'Unknown';
+            platformName.textContent = data.platform_label || data.platform || 'Unknown';
+            const confBadge = document.getElementById('platform-confidence-badge');
+            if (confBadge && data.confidence !== undefined && data.confidence !== null) {
+                const pct = Math.round(data.confidence * 100);
+                confBadge.textContent = `${pct}% confidence`;
+                confBadge.classList.remove('hidden');
+            }
 
             if (discoveredProducts.length === 0) {
                 errorMessage.textContent = 'No products found. Try a different URL or keyword.';

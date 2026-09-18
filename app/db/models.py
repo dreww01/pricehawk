@@ -54,6 +54,10 @@ class StoreDiscoveryResponse(BaseModel):
     total_found: int
     products: list[DiscoveredProductResponse]
     error: str | None = None
+    confidence: float = 1.0
+    platform_label: str | None = None
+    is_headless: bool = False
+    matched_signals: list[str] = []
 
 
 class TrackProductItem(BaseModel):

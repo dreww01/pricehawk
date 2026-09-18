@@ -59,6 +59,10 @@ async def discover_store_products(
         total_found=result.total_found,
         products=products,
         error=result.error,
+        confidence=result.confidence,
+        platform_label=result.platform_label,
+        is_headless=result.is_headless,
+        matched_signals=result.matched_signals,
     )
 
 

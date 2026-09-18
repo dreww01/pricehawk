@@ -36,10 +36,17 @@ class BaseStoreHandler(ABC):
     """Abstract base class for store handlers."""
 
     platform_name: str = "unknown"
+    platform_label: str = "Unknown"
+    confidence: float = 0.0
 
     def __init__(self, timeout: float = 30.0):
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self.platform_name = getattr(self.__class__, "platform_name", "unknown")
+        self.platform_label = getattr(self.__class__, "platform_label", "Unknown")
+        self.confidence = getattr(self.__class__, "confidence", 0.0)
+        self.is_headless: bool = False
+        self.matched_signals: list[str] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -57,7 +64,7 @@ class BaseStoreHandler(ABC):
             await self._client.aclose()
 
     @abstractmethod
-    async def detect(self, url: str) -> bool:
+    async def detect(self, url: str, html: str | None = None) -> bool:
         """
         Check if URL belongs to this platform.
         Returns True if this handler can process the URL.

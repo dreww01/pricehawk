@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 import logging
 import posixpath
@@ -84,6 +85,17 @@ def clear_revoked_users() -> None:
     """Clear in-memory revoked users set (primarily for test cleanup)."""
     with _revocation_lock:
         _revoked_users.clear()
+
+
+def create_access_token(data: dict, expires_delta: timedelta | int | float | None = None) -> str:
+    """Create a signed JWT access token for authentication."""
+    settings = get_settings()
+    to_encode = data.copy()
+    if expires_delta is not None:
+        if isinstance(expires_delta, (int, float)):
+            expires_delta = timedelta(seconds=expires_delta)
+        to_encode["exp"] = datetime.now(timezone.utc) + expires_delta
+    return jwt.encode(to_encode, settings.sb_jwt_secret, algorithm="HS256")
 
 
 

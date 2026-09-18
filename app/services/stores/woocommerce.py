@@ -8,33 +8,182 @@ class WooCommerceHandler(BaseStoreHandler):
     """Handler for WooCommerce stores using Store API or REST API."""
 
     platform_name = "woocommerce"
+    platform_label = "WooCommerce"
 
     # API endpoints in order of preference
     API_ENDPOINTS = [
         "/wp-json/wc/store/products",
         "/wp-json/wc/v3/products",
         "/wp-json/wc/v2/products",
+        "/?rest_route=/wc/store/products",
+        "/?rest_route=/wc/v3/products",
+        "/wp-json/cocart/v2/products",
     ]
 
-    async def detect(self, url: str) -> bool:
-        """Check if store is WooCommerce by testing API endpoints."""
+    async def detect(self, url: str, html: str | None = None) -> bool:
+        """
+        Check if store is WooCommerce via API, URL patterns, or HTML inspection.
+        Recognizes classic WooCommerce, custom subdomains, alternative URL paths,
+        and headless setups (CoCart, WPGraphQL for WooCommerce).
+        """
+        url = (url or "").strip()
+        if url and not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+
         parsed = urlparse(url)
+        netloc = parsed.netloc.lower()
         base_url = f"{parsed.scheme}://{parsed.netloc}"
+        path = parsed.path.rstrip("/")
+
+        self.matched_signals = []
+        self.is_headless = False
+
+        # Signal check: custom commerce subdomain
+        if any(netloc.startswith(prefix) for prefix in ("shop.", "store.", "wp.", "cms.")):
+            self.matched_signals.append("custom_subdomain")
+
+        # Signal check: alternative WooCommerce URL patterns
+        query = parsed.query or ""
+        if (
+            any(p in path for p in ("/product/", "/product-category/", "/shop/"))
+            or path.endswith(("/product", "/shop"))
+            or "post_type=product" in query
+            or "product=" in query
+            or "rest_route=/wc" in query
+        ):
+            self.matched_signals.append("woocommerce_url_pattern")
+
+        # If HTML is provided directly, inspect it first without network I/O
+        if html:
+            if self._inspect_woocommerce_html(html):
+                return True
+            return False
 
         client = await self._get_client()
 
-        for endpoint in self.API_ENDPOINTS:
+        # Build candidate base URLs (support subpath WP installs e.g. /shop, /store, /wp)
+        base_candidates = [base_url]
+        if path and not path.startswith(("/product", "/wp-json")):
+            subpath = path.split("/product")[0] if "/product" in path else path
+            if subpath and subpath != "/":
+                base_candidates.append(f"{base_url}{subpath}")
+
+        # Signal check 1: Probe WooCommerce API endpoints
+        for base in base_candidates:
+            for endpoint in self.API_ENDPOINTS:
+                try:
+                    sep = "&" if "?" in endpoint else "?"
+                    test_url = f"{base}{endpoint}{sep}per_page=1"
+                    response = await client.get(test_url)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        if isinstance(data, list) and len(data) > 0:
+                            is_cocart = "cocart" in endpoint
+                            self.is_headless = is_cocart
+                            self.matched_signals.append(f"api_{endpoint}")
+                            self.confidence = 0.98 if not is_cocart else 0.92
+                            self.platform_label = "WooCommerce (Headless)" if is_cocart else "WooCommerce"
+                            return True
+
+                except Exception:
+                    continue
+
+        # Signal check 2: Probe WP REST API root index for WooCommerce namespaces
+        for base in base_candidates:
+            for root_url in [f"{base}/wp-json/", f"{base}/?rest_route=/"]:
+                try:
+                    res = await client.get(root_url)
+                    if res.status_code == 200:
+                        data = res.json()
+                        namespaces = data.get("namespaces", [])
+                        if any("wc" in ns for ns in namespaces):
+                            self.matched_signals.append("wp_json_wc_namespace")
+                            self.confidence = 0.95
+                            self.platform_label = "WooCommerce"
+                            return True
+                except Exception:
+                    pass
+
+        # Signal check 3: HTML inspection (direct httpx fetch or passed html)
+        page_html = None
+        try:
+            html_res = await client.get(url)
+            if html_res.status_code == 200:
+                page_html = html_res.text
+        except Exception:
+            pass
+
+        if not page_html and base_url != url:
             try:
-                test_url = f"{base_url}{endpoint}?per_page=1"
-                response = await client.get(test_url)
-
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list) and len(data) > 0:
-                        return True
-
+                html_res = await client.get(base_url)
+                if html_res.status_code == 200:
+                    page_html = html_res.text
             except Exception:
-                continue
+                pass
+
+        if page_html:
+            if self._inspect_woocommerce_html(page_html):
+                return True
+
+        return False
+
+    def _inspect_woocommerce_html(self, html: str) -> bool:
+        """Inspect HTML content for WooCommerce and headless WooCommerce signatures."""
+        if not html:
+            return False
+
+        html_lower = html.lower()
+
+        # Headless WooCommerce indicators (WPGraphQL, CoCart, Next.js WooCommerce, etc.)
+        headless_signals = []
+        headless_indicators = [
+            ("woographql", "woographql"),
+            ("wpgraphql", "wpgraphql"),
+            ("wpgraphql", "wp-graphql"),
+            ("cocart", "cocart"),
+            ("wc_store_api", "/wp-json/wc/store"),
+            ("wc_store_api", "wc-store-api"),
+        ]
+        for sig_name, marker in headless_indicators:
+            if marker in html_lower and sig_name not in headless_signals:
+                headless_signals.append(sig_name)
+
+        if '__next_data__' in html_lower and any(k in html_lower for k in ("woographql", "wpgraphql", "cocart", "woocommerce")):
+            if "nextjs_woocommerce" not in headless_signals:
+                headless_signals.append("nextjs_woocommerce")
+
+        # Standard / Classic WooCommerce signatures
+        signals = []
+        if "/wp-content/plugins/woocommerce/" in html_lower or "wp-content/plugins/woocommerce" in html_lower or "/wp-content/themes/" in html_lower:
+            signals.append("wp_woocommerce_assets")
+        if 'name="generator" content="woocommerce' in html_lower or "generator\" content=\"woocommerce" in html_lower:
+            signals.append("woocommerce_generator_meta")
+        if "woocommerce-price-amount" in html_lower or "woocommerce-price-currencysymbol" in html_lower or "wc-block" in html_lower:
+            signals.append("woocommerce_css_classes")
+        if "wc_add_to_cart_params" in html_lower or "woocommerce_params" in html_lower or "wc_cart_fragments_params" in html_lower or "wcsettings" in html_lower:
+            signals.append("woocommerce_js_params")
+        if 'rel="https://api.w.org/"' in html_lower or "rel='https://api.w.org/'" in html_lower or 'href="https://api.w.org/"' in html_lower:
+            signals.append("wp_api_link")
+        if "woocommerce" in html_lower and ("add_to_cart_button" in html_lower or "product_type_simple" in html_lower or "woocommerce-page" in html_lower or "single_add_to_cart_button" in html_lower):
+            signals.append("woocommerce_cart_markup")
+
+        all_signals = list(dict.fromkeys(headless_signals + signals))
+
+        if all_signals:
+            for s in all_signals:
+                if s not in self.matched_signals:
+                    self.matched_signals.append(s)
+
+            is_headless = bool(headless_signals)
+            self.is_headless = is_headless
+            if is_headless:
+                self.platform_label = "WooCommerce (Headless)"
+                self.confidence = min(0.95, 0.85 + len(all_signals) * 0.03)
+            else:
+                self.platform_label = "WooCommerce"
+                self.confidence = min(0.98, 0.88 + len(all_signals) * 0.02)
+            return True
 
         return False
 
@@ -62,6 +211,16 @@ class WooCommerceHandler(BaseStoreHandler):
         # Find working endpoint
         working_endpoint = await self._find_working_endpoint(base_url)
         if not working_endpoint:
+            try:
+                from app.services.stores.generic import GenericHandler
+                generic = GenericHandler()
+                fallback_products = await generic.fetch_products(url, keyword=keyword, limit=limit)
+                if fallback_products:
+                    for p in fallback_products:
+                        p.platform = self.platform_name
+                    return fallback_products
+            except Exception:
+                pass
             return []
 
         products: list[DiscoveredProduct] = []
@@ -92,6 +251,19 @@ class WooCommerceHandler(BaseStoreHandler):
 
             except Exception:
                 break
+
+        # Fallback to generalized web heuristics if API fetch returned no products
+        if not products:
+            try:
+                from app.services.stores.generic import GenericHandler
+                generic = GenericHandler()
+                fallback_products = await generic.fetch_products(url, keyword=keyword, limit=limit)
+                if fallback_products:
+                    for p in fallback_products:
+                        p.platform = self.platform_name
+                    return fallback_products
+            except Exception:
+                pass
 
         # Filter by keyword AFTER fetching all products
         filtered = self.filter_by_keyword(products, keyword)

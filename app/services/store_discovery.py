@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.services.store_detector import detect_platform
 from app.services.stores.base import DiscoveredProduct
@@ -12,6 +12,10 @@ class DiscoveryResult:
     total_found: int
     products: list[DiscoveredProduct]
     error: str | None = None
+    confidence: float = 1.0
+    platform_label: str = ""
+    is_headless: bool = False
+    matched_signals: list[str] = field(default_factory=list)
 
 
 async def discover_products(
@@ -45,11 +49,28 @@ async def discover_products(
         # Fetch products
         products = await handler.fetch_products(url, keyword, limit)
 
+        # Robust fallback: if platform-specific fetching yielded no products, try generalized web heuristics
+        if not products and handler.platform_name != "custom":
+            try:
+                from app.services.stores.generic import GenericHandler
+                fallback_handler = GenericHandler()
+                fallback_products = await fallback_handler.fetch_products(url, keyword, limit)
+                if fallback_products:
+                    for p in fallback_products:
+                        p.platform = handler.platform_name
+                    products = fallback_products
+            except Exception:
+                pass
+
         return DiscoveryResult(
             platform=handler.platform_name,
             store_url=url,
             total_found=len(products),
             products=products,
+            confidence=getattr(handler, "confidence", 1.0),
+            platform_label=getattr(handler, "platform_label", handler.platform_name.capitalize()),
+            is_headless=getattr(handler, "is_headless", False),
+            matched_signals=list(getattr(handler, "matched_signals", [])),
         )
 
     except Exception as e:
@@ -59,6 +80,10 @@ async def discover_products(
             total_found=0,
             products=[],
             error=str(e)[:200],
+            confidence=0.0,
+            platform_label="Unknown",
+            is_headless=False,
+            matched_signals=[],
         )
 
     finally:
