@@ -25,6 +25,36 @@ class DiscoveredProductResponse(BaseModel):
     in_stock: bool = True
 
 
+class StoreDetectRequest(BaseModel):
+    """Request to detect competitor store platform."""
+    url: str = Field(..., min_length=3, max_length=2048)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        v = v.strip()
+        # Reject http:// explicitly (insecure)
+        if v.lower().startswith("http://"):
+            raise ValueError("HTTP is not secure. Please use HTTPS or enter the domain without a protocol")
+        # Normalize: add https:// if no scheme
+        if not v.startswith("https://"):
+            if "." in v and " " not in v:
+                v = f"https://{v}"
+            else:
+                raise ValueError("Invalid URL format")
+        return v
+
+
+class StoreDetectResponse(BaseModel):
+    """Response from competitor store platform detection."""
+    url: str
+    platform: str
+    platform_label: str
+    confidence: float
+    is_headless: bool
+    matched_signals: list[str] = []
+
+
 class StoreDiscoveryRequest(BaseModel):
     """Request to discover products from a store."""
     url: str = Field(..., min_length=3, max_length=2048)

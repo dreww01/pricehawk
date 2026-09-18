@@ -5,7 +5,8 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from app.services.stores.base import BaseStoreHandler, DiscoveredProduct
+from app.services.stores.base import BaseStoreHandler, DiscoveredProduct, is_commerce_subdomain
+from app.services.scraper_service import parse_price
 
 
 class GenericHandler(BaseStoreHandler):
@@ -111,13 +112,17 @@ class GenericHandler(BaseStoreHandler):
         self.platform_label = "Custom (Generalized Heuristics)"
         self.confidence = 0.50
 
+        hostname = (parsed.hostname or "").lower()
         netloc = parsed.netloc.lower()
         path = parsed.path.rstrip("/").lower()
-        if any(netloc.startswith(prefix) for prefix in ("shop.", "store.", "buy.", "checkout.", "products.")):
+        query = (parsed.query or "").lower()
+
+        if is_commerce_subdomain(hostname):
             self.matched_signals.append("custom_subdomain")
             self.confidence = max(self.confidence, 0.55)
 
-        if any(p in path for p in ("/product", "/p/", "/item/", "/products", "/shop")):
+        product_url_indicators = ("/product", "/p/", "/item/", "/products", "/shop", "/dp/", "/detail/", "/goods/", "/listing/")
+        if any(p in path for p in product_url_indicators) or any(k in query for k in ("sku=", "pid=", "product_id=", "product=")):
             self.matched_signals.append("product_url_pattern")
             self.confidence = max(self.confidence, 0.55)
 
@@ -137,7 +142,7 @@ class GenericHandler(BaseStoreHandler):
             has_schema = bool(soup.select('script[type="application/ld+json"]'))
             has_og = bool(soup.select('meta[property*="og:price"], meta[property*="product:price"], meta[name*="product:price"], meta[name*="og:price"]'))
             has_microdata = bool(soup.select('[itemprop="price"]'))
-            has_hydration = bool(soup.select('script[id="__NEXT_DATA__"], script[id="__NUXT_DATA__"], script[data-remix-context]'))
+            has_hydration = bool(soup.select('script[id="__NEXT_DATA__"], script[id="__NUXT_DATA__"], script[data-remix-context], script[type="text/x-magento-init"]'))
             has_selectors = any(bool(soup.select(sel)) for sel in self.PRICE_SELECTORS[:10])
 
             if has_schema:
@@ -158,7 +163,7 @@ class GenericHandler(BaseStoreHandler):
 
             rich_signals = [s for s in ("schema_org_json_ld", "opengraph_price_metadata", "microdata_price", "hydration_data") if s in self.matched_signals]
             if len(rich_signals) >= 2:
-                self.confidence = min(0.80, self.confidence + 0.04 * len(rich_signals))
+                self.confidence = min(0.85, self.confidence + 0.04 * len(rich_signals))
 
         return True
 
@@ -169,20 +174,28 @@ class GenericHandler(BaseStoreHandler):
         limit: int = 50,
     ) -> list[DiscoveredProduct]:
         """Attempt to extract products using generalized web heuristics."""
+        products = []
         try:
             client = await self._get_client()
             response = await client.get(url)
 
-            if response.status_code != 200:
-                return []
-
-            html = response.text
-            products = self._parse_products(html, url)
-
-            return self.filter_by_keyword(products, keyword)[:limit]
-
+            if response.status_code == 200:
+                html = response.text
+                products = self._parse_products(html, url)
         except Exception:
-            return []
+            pass
+
+        # Fallback to Playwright for JS-rendered storefronts
+        if not products:
+            try:
+                from app.services.scraper_service import fetch_with_playwright
+                pw_html = await fetch_with_playwright(url)
+                if pw_html:
+                    products = self._parse_products(pw_html, url)
+            except Exception:
+                pass
+
+        return self.filter_by_keyword(products, keyword)[:limit]
 
     def _parse_products(self, html: str, base_url: str) -> list[DiscoveredProduct]:
         """
@@ -420,67 +433,28 @@ class GenericHandler(BaseStoreHandler):
 
     def _parse_price_text(self, text: str) -> tuple[Decimal | None, str]:
         """Parse price text into Decimal and currency with international symbol support."""
-        if not text:
-            return None, "USD"
-
-        text = text.strip()
-
-        # Detect currency
-        currency = "USD"
-        if "₦" in text or "NGN" in text.upper():
-            currency = "NGN"
-        elif "£" in text or "GBP" in text.upper():
-            currency = "GBP"
-        elif "€" in text or "EUR" in text.upper():
-            currency = "EUR"
-        elif "¥" in text or "JPY" in text.upper():
-            currency = "JPY"
-        elif "₹" in text or "INR" in text.upper():
-            currency = "INR"
-        elif "CAD" in text.upper() or "C$" in text:
-            currency = "CAD"
-        elif "AUD" in text.upper() or "A$" in text:
-            currency = "AUD"
-        elif "CHF" in text.upper():
-            currency = "CHF"
-
-        # Clean price string (keep commas for European format detection)
-        cleaned = re.sub(r"[£€$¥₹₦\s]", "", text)
-        cleaned = re.sub(r"[A-Za-z]", "", cleaned)
-
-        # Handle decimal formats
-        if "," in cleaned and "." in cleaned:
-            if cleaned.rfind(",") > cleaned.rfind("."):
-                cleaned = cleaned.replace(".", "").replace(",", ".")
-            else:
-                cleaned = cleaned.replace(",", "")
-        elif "," in cleaned:
-            parts = cleaned.split(",")
-            if len(parts[-1]) == 2:
-                cleaned = cleaned.replace(",", ".")
-            else:
-                cleaned = cleaned.replace(",", "")
-
-        try:
-            val = Decimal(cleaned)
-            return val, currency
-        except Exception:
-            return None, currency
+        return parse_price(text)
 
     def _extract_hydration_price(self, soup: BeautifulSoup) -> tuple[Decimal | None, str]:
-        """Extract price from __NEXT_DATA__ or embedded hydration JSON."""
-        script = soup.select_one('script[id="__NEXT_DATA__"]')
-        if script and script.string:
-            try:
-                data = json.loads(script.string)
-                # Search for price recursively
-                found = self._find_key_recursive(data, ["price", "amount", "minPrice", "regularPrice"])
-                if found is not None:
-                    price, curr = self._parse_price_text(str(found))
-                    if price:
-                        return price, curr
-            except Exception:
-                pass
+        """Extract price from __NEXT_DATA__, __NUXT_DATA__, or embedded hydration JSON."""
+        hydration_selectors = [
+            'script[id="__NEXT_DATA__"]',
+            'script[id="__NUXT_DATA__"]',
+            'script[data-remix-context]',
+            'script[type="text/x-magento-init"]',
+        ]
+        for h_sel in hydration_selectors:
+            script = soup.select_one(h_sel)
+            if script and (script.string or script.get_text()):
+                try:
+                    data = json.loads((script.string or script.get_text()).strip())
+                    found = self._find_key_recursive(data, ["price", "amount", "minPrice", "regularPrice", "salePrice", "finalPrice"])
+                    if found is not None:
+                        price, curr = self._parse_price_text(str(found))
+                        if price:
+                            return price, curr
+                except Exception:
+                    pass
         return None, "USD"
 
     def _find_key_recursive(self, obj: any, keys: list[str]) -> any:

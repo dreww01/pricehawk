@@ -347,7 +347,7 @@ def detect_platform_from_html(html: str) -> str | None:
         return None
     html_lower = html.lower()
 
-    # Shopify indicators (including headless Hydrogen, Next.js Commerce, Storefront API)
+    # Shopify indicators (including headless Hydrogen, Next.js Commerce, Storefront API, Buy SDK, etc.)
     shopify_markers = [
         "cdn.shopify",
         "shopify.theme",
@@ -363,30 +363,55 @@ def detect_platform_from_html(html: str) -> str | None:
         "@shopify/hydrogen",
         "remix-oxygen",
         "oxygen-v1",
+        "oxygen-v2",
+        "shopify.oxygen",
+        "oxygen.shopify",
         "shopifybuy",
         "shopify-buy",
+        "sdks.shopifycdn.com",
         "storefront.shopify.com",
         "shopify-storefront-api",
         "x-shopify-storefront",
+        "storefrontaccesstoken",
+        "@shopify/storefront-api-client",
+        "@shopify/storefront-api-utilities",
         "nextjs-commerce",
         "@vercel/commerce-shopify",
+        "shopify-commerce",
         "shopifystorefront",
         "__hydrogen_state__",
         "__shopify_dev_host__",
         "trekkie",
         "gatsby-source-shopify",
+        "gatsby-plugin-shopify",
+        "astro-shopify",
+        "svelte-shopify",
+        "nuxt-shopify",
+        "@vue-storefront/shopify",
+        "vsf-shopify",
+        "gid://shopify/",
+        "checkout.shopify.com",
+        "myshopify.com",
+        "shop.app/checkout",
     ]
     if any(marker in html_lower for marker in shopify_markers):
         return "shopify"
+
+    # Hydration check for Shopify
+    hydration_contexts = ('__next_data__', '__nuxt_data__', '__nuxt__', '__remix_context__', 'window.__initial_state__', 'window.__preloaded_state__')
+    if any(ctx in html_lower for ctx in hydration_contexts) and any(m in html_lower for m in ("shopify", "myshopify.com", "storefront", "gid://shopify/")):
+        return "shopify"
+
     if "shopify" in html_lower:
         return "shopify"
 
-    # WooCommerce indicators (including headless WPGraphQL, CoCart, classic)
+    # WooCommerce indicators (including headless WPGraphQL, CoCart, classic, Faust.js, etc.)
     woo_markers = [
         "/wp-content/plugins/woocommerce/",
         "woocommerce-price-amount",
         "woocommerce-price-currencysymbol",
         "wc-block",
+        "wc-block-components",
         "woocommerce_params",
         "wc_add_to_cart_params",
         "wc_cart_fragments_params",
@@ -396,12 +421,28 @@ def detect_platform_from_html(html: str) -> str | None:
         "woographql",
         "wpgraphql",
         "wp-graphql",
+        "wp-graphql-woocommerce",
         "cocart",
+        "cocart-api",
         "wc-store-api",
         "/wp-json/wc/",
+        "faustjs",
+        "@faustwp",
+        "frontity",
+        "wp-frontity",
+        "@woocommerce/store-client",
+        "gatsby-source-woocommerce",
+        "gatsby-source-wordpress",
+        "nuxt-woocommerce",
+        "@nuxtjs/woocommerce",
     ]
     if any(marker in html_lower for marker in woo_markers):
         return "woocommerce"
+
+    # Hydration check for WooCommerce
+    if any(ctx in html_lower for ctx in hydration_contexts) and any(m in html_lower for m in ("woocommerce", "woographql", "wpgraphql", "cocart", "wc-store-api")):
+        return "woocommerce"
+
     if "woocommerce" in html_lower:
         return "woocommerce"
 
@@ -409,48 +450,98 @@ def detect_platform_from_html(html: str) -> str | None:
 
 
 def parse_price(text: str) -> tuple[Decimal | None, str]:
-    """Extract price and currency from text."""
+    """Extract price and currency from text with international currency and format support."""
     if not text:
         return None, "USD"
 
     text = text.strip()
 
-    # Detect currency (check NGN/₦ first since Nigerian stores are common)
-    currency = "USD"
-    if "₦" in text or "NGN" in text.upper():
-        currency = "NGN"
-    elif "£" in text or "GBP" in text.upper():
-        currency = "GBP"
-    elif "€" in text or "EUR" in text.upper():
-        currency = "EUR"
-    elif "CAD" in text.upper() or "C$" in text:
-        currency = "CAD"
-    elif "AUD" in text.upper() or "A$" in text:
-        currency = "AUD"
-    elif "¥" in text or "JPY" in text.upper():
-        currency = "JPY"
-    elif "₹" in text or "INR" in text.upper():
-        currency = "INR"
-    elif "CHF" in text.upper():
-        currency = "CHF"
+    # Prioritized currency symbol mapping (multi-char symbols before single-char)
+    symbol_currencies = [
+        ("R$", "BRL"),
+        ("C$", "CAD"),
+        ("A$", "AUD"),
+        ("NZ$", "NZD"),
+        ("S$", "SGD"),
+        ("HK$", "HKD"),
+        ("Mex$", "MXN"),
+        ("KSh", "KES"),
+        ("zł", "PLN"),
+        ("Kč", "CZK"),
+        ("Ft", "HUF"),
+        ("Rp", "IDR"),
+        ("RM", "MYR"),
+        ("kr", "SEK"),
+        ("₦", "NGN"),
+        ("£", "GBP"),
+        ("€", "EUR"),
+        ("¥", "JPY"),
+        ("₹", "INR"),
+        ("₪", "ILS"),
+        ("₺", "TRY"),
+        ("₽", "RUB"),
+        ("₱", "PHP"),
+        ("฿", "THB"),
+        ("₫", "VND"),
+    ]
 
-    # Remove currency symbols and whitespace (keep commas for European format detection)
-    cleaned = re.sub(r"[£€$¥₹₦\s]", "", text)
+    iso_codes = [
+        "NGN", "GBP", "EUR", "CAD", "AUD", "JPY", "INR", "CHF", "USD",
+        "BRL", "ZAR", "MXN", "SEK", "DKK", "NOK", "PLN", "NZD", "SGD",
+        "HKD", "AED", "SAR", "ILS", "TRY", "CZK", "HUF", "RUB", "PHP",
+        "IDR", "MYR", "THB", "VND", "KES", "CLP", "COP",
+    ]
+
+    currency = "USD"
+    found_currency = False
+
+    # 1. Check ISO codes with word boundaries
+    for code in iso_codes:
+        if re.search(rf"\b{code}\b", text, re.IGNORECASE):
+            currency = code
+            found_currency = True
+            break
+
+    # 2. Check specific symbols if ISO code not matched
+    if not found_currency:
+        for sym, curr in symbol_currencies:
+            if sym in text:
+                currency = curr
+                found_currency = True
+                break
+
+    # 3. If standard dollar symbol present and no specific dollar currency identified
+    if not found_currency and "$" in text:
+        currency = "USD"
+
+    # Clean price string
+    # Remove prefix currency symbols and words
+    cleaned = text
+    for sym, _ in symbol_currencies:
+        cleaned = cleaned.replace(sym, "")
+    for code in iso_codes:
+        cleaned = re.sub(rf"\b{code}\b", "", cleaned, flags=re.IGNORECASE)
+
+    # Remove currency symbols and whitespace
+    cleaned = re.sub(r"[£€$¥₹₦₪₺₽₱฿₫\s]", "", cleaned)
     cleaned = re.sub(r"[A-Za-z]", "", cleaned)
 
-    # Handle European format (1.234,56 → 1234.56)
+    # Handle European format (1.234,56 → 1234.56) and general formats
     if "," in cleaned and "." in cleaned:
         if cleaned.rfind(",") > cleaned.rfind("."):
             cleaned = cleaned.replace(".", "").replace(",", ".")
         else:
             cleaned = cleaned.replace(",", "")
     elif "," in cleaned:
-        # Could be 1,234 or 1,23 - check decimal places
         parts = cleaned.split(",")
         if len(parts[-1]) == 2:
             cleaned = cleaned.replace(",", ".")
         else:
             cleaned = cleaned.replace(",", "")
+    elif "." in cleaned:
+        parts = cleaned.split(".")
+        if len(parts) > 2:
+            cleaned = "".join(parts[:-1]) + "." + parts[-1]
 
     try:
         return Decimal(cleaned), currency
@@ -598,9 +689,10 @@ def _extract_price_via_generalized_heuristics(soup: BeautifulSoup) -> tuple[Deci
     meta_pairs = [
         ("meta[property='product:price:amount']", "meta[property='product:price:currency']"),
         ("meta[name='product:price:amount']", "meta[name='product:price:currency']"),
+        ("meta[property='product:sale_price:amount']", "meta[property='product:price:currency']"),
         ("meta[property='og:price:amount']", "meta[property='og:price:currency']"),
         ("meta[name='og:price:amount']", "meta[name='og:price:currency']"),
-        ("meta[property='product:sale_price:amount']", None),
+        ("meta[property='product:original_price:amount']", "meta[property='product:price:currency']"),
         ("meta[name='twitter:data1']", None),
         ("meta[itemprop='price']", "meta[itemprop='priceCurrency']"),
     ]
@@ -637,28 +729,71 @@ def _extract_price_via_generalized_heuristics(soup: BeautifulSoup) -> tuple[Deci
                         curr = context_curr
                 return price, curr
 
-    # Heuristic 4: Hydration state (__NEXT_DATA__)
-    next_script = soup.select_one('script[id="__NEXT_DATA__"]')
-    if next_script and next_script.string:
-        try:
-            data = json.loads(next_script.string)
-            val = _find_key_in_dict_recursive(data, ["price", "amount", "regularPrice", "minPrice"])
-            if val is not None:
-                price, curr = parse_price(str(val))
-                if price and price > 0:
-                    return price, curr
-        except Exception:
-            pass
+    # Heuristic 4: Hydration state (__NEXT_DATA__, __NUXT_DATA__, Remix, etc.)
+    hydration_selectors = [
+        'script[id="__NEXT_DATA__"]',
+        'script[id="__NUXT_DATA__"]',
+        'script[data-remix-context]',
+        'script[type="text/x-magento-init"]',
+    ]
+    for h_sel in hydration_selectors:
+        script = soup.select_one(h_sel)
+        if script and (script.string or script.get_text()):
+            try:
+                raw_json = (script.string or script.get_text()).strip()
+                data = json.loads(raw_json)
+                val = _find_key_in_dict_recursive(data, ["price", "amount", "regularPrice", "minPrice", "finalPrice", "salePrice"])
+                if val is not None:
+                    price, curr = parse_price(str(val))
+                    if price and price > 0:
+                        return price, curr
+            except Exception:
+                pass
 
-    # Heuristic 5: Contextual search in elements with class/id/aria suggesting price
+    # Heuristic 5: Active sale / current price prioritized search
+    priority_price_selectors = [
+        "ins .amount",
+        "ins [class*='price' i]",
+        "[class*='sale-price' i]",
+        "[class*='current-price' i]",
+        "[class*='special-price' i]",
+        "[class*='price--sale' i]",
+        "[class*='now-price' i]",
+        "[data-price-type='finalPrice']",
+        ".price-item--sale",
+        ".price-item--regular",
+    ]
+    for sel in priority_price_selectors:
+        for el in soup.select(sel):
+            val = el.get("content") or el.get("value") or el.get("data-price") or el.get_text(strip=True)
+            if val:
+                price, curr = parse_price(str(val))
+                if price and price > 0 and price < Decimal("1000000"):
+                    context_curr = _detect_context_currency(el, soup)
+                    if context_curr:
+                        curr = context_curr
+                    return price, curr
+
+    # Heuristic 6: Contextual search in elements with class/id/aria suggesting price
     candidate_elements = soup.select(
         "[class*='price' i], [id*='price' i], [aria-label*='price' i], [data-test*='price' i], [data-testid*='price' i]"
     )
     for el in candidate_elements:
+        # Skip strikethrough / original prices if element itself is del / s / strike
+        tag_name = getattr(el, "name", "").lower()
+        if tag_name in ("del", "s", "strike"):
+            continue
+        classes = " ".join(el.get("class", [])).lower()
+        if any(cls_word in classes for cls_word in ("was-price", "old-price", "line-through", "original-price")):
+            continue
+
         val = el.get("content") or el.get("value") or el.get("data-price") or el.get_text(strip=True)
         if val:
             price, curr = parse_price(str(val))
             if price and price > 0 and price < Decimal("1000000"):
+                context_curr = _detect_context_currency(el, soup)
+                if context_curr:
+                    curr = context_curr
                 return price, curr
 
     return None, "USD"
@@ -691,6 +826,27 @@ def _find_schema_price(data: any) -> tuple[Decimal | None, str]:
                 if price and price > 0:
                     return price, curr
 
+        # Check hasVariant (nested product variants)
+        has_variant = data.get("hasVariant")
+        if has_variant:
+            price, curr = _find_schema_price(has_variant)
+            if price and price > 0:
+                return price, curr
+
+        # Check itemListElement
+        item_list = data.get("itemListElement")
+        if item_list:
+            price, curr = _find_schema_price(item_list)
+            if price and price > 0:
+                return price, curr
+
+        # Check item wrapper
+        item = data.get("item")
+        if item:
+            price, curr = _find_schema_price(item)
+            if price and price > 0:
+                return price, curr
+
         # Check direct price on object
         if "price" in data:
             price, curr = parse_price(str(data["price"]))
@@ -704,14 +860,19 @@ def _find_schema_price(data: any) -> tuple[Decimal | None, str]:
 def _extract_offer_price(offer: dict) -> tuple[Decimal | None, str]:
     """Extract price and currency from a single offer dictionary."""
     curr = str(offer.get("priceCurrency", "USD")).upper()
-    if "priceSpecification" in offer and isinstance(offer["priceSpecification"], dict):
-        spec = offer["priceSpecification"]
-        for key in ("price", "minPrice", "maxPrice"):
-            if key in spec and spec[key] is not None:
-                price, detected_curr = parse_price(str(spec[key]))
-                if price and price > 0:
-                    spec_curr = spec.get("priceCurrency")
-                    return price, str(spec_curr or curr or detected_curr).upper()
+    specs = offer.get("priceSpecification")
+    if specs:
+        if isinstance(specs, dict):
+            specs = [specs]
+        if isinstance(specs, list):
+            for spec in specs:
+                if isinstance(spec, dict):
+                    for key in ("price", "minPrice", "maxPrice"):
+                        if key in spec and spec[key] is not None:
+                            price, detected_curr = parse_price(str(spec[key]))
+                            if price and price > 0:
+                                spec_curr = spec.get("priceCurrency")
+                                return price, str(spec_curr or curr or detected_curr).upper()
 
     for key in ("price", "lowPrice", "highPrice"):
         if key in offer and offer[key] is not None:

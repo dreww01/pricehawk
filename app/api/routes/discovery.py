@@ -6,18 +6,43 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_supabase_client
 from app.db.models import (
+    StoreDetectRequest,
+    StoreDetectResponse,
     StoreDiscoveryRequest,
     StoreDiscoveryResponse,
     DiscoveredProductResponse,
     TrackProductsRequest,
     TrackProductsResponse,
 )
+from app.services.store_detector import detect_store
 from app.services.store_discovery import discover_products
 from app.services.dashboard_cache import invalidate_dashboard_cache
 
 
 router = APIRouter(prefix="/stores", tags=["discovery"])
 security = HTTPBearer()
+
+
+@router.post(
+    "/detect",
+    response_model=StoreDetectResponse,
+    summary="Detect store platform",
+    description="Detect competitor store platform, confidence, and headless architecture with transparent labeling.",
+)
+async def detect_competitor_store(
+    body: StoreDetectRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> StoreDetectResponse:
+    result = await detect_store(url=body.url)
+    return StoreDetectResponse(
+        url=body.url,
+        platform=result.platform,
+        platform_label=result.platform_label,
+        confidence=result.confidence,
+        is_headless=result.is_headless,
+        matched_signals=result.matched_signals,
+    )
 
 
 @router.post(

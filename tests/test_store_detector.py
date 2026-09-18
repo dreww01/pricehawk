@@ -482,6 +482,133 @@ GENERIC_PLAIN_NON_COMMERCE_HTML = """
 </html>
 """
 
+HEADLESS_NUXT_SHOPIFY_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nuxt Shopify Store - Performance Hoodie</title>
+    <script id="__NUXT_DATA__" type="application/json">
+    [
+        {"storefront": "https://brand.myshopify.com/api/2024-01/graphql.json", "plugin": "@vue-storefront/shopify"}
+    ]
+    </script>
+</head>
+<body>
+    <div id="__nuxt">
+        <h1>Performance Hoodie</h1>
+        <div class="price">$110.00</div>
+    </div>
+</body>
+</html>
+"""
+
+HEADLESS_FAUST_WOOCOMMERCE_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Faust WP Woo - Mechanical Keyboard</title>
+    <meta name="generator" content="Faust.js Headless WordPress">
+    <script>
+        window.__FAUST_CONFIG__ = {
+            wpUrl: "https://cms.keebs.com",
+            plugins: ["@faustwp/core", "wp-graphql-woocommerce"]
+        };
+    </script>
+</head>
+<body>
+    <main>
+        <h1>Mechanical Keyboard</h1>
+        <div class="price">€189.00</div>
+    </main>
+</body>
+</html>
+"""
+
+GENERIC_MAGENTO_INIT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Enterprise Outdoor - Camping Tent</title>
+    <script type="text/x-magento-init">
+    {
+        "[data-role=priceBox]": {
+            "priceBox": {
+                "priceConfig": {
+                    "regularPrice": 299.95,
+                    "finalPrice": 249.95,
+                    "priceFormat": {"pattern": "$%s"}
+                }
+            }
+        }
+    }
+    </script>
+</head>
+<body>
+    <h1>Camping Tent 4-Person</h1>
+    <div class="product-info-price">
+        <span class="price">$249.95</span>
+    </div>
+</body>
+</html>
+"""
+
+GENERIC_DEL_INS_SALE_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Fashion House - Trench Coat</title></head>
+<body>
+    <div class="product-pricing">
+        <del class="old-price line-through text-gray-400">$250.00</del>
+        <ins class="sale-price font-bold text-red-600">$175.00</ins>
+    </div>
+</body>
+</html>
+"""
+
+MULTI_CURRENCY_BRL_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Loja Brasil - Camiseta Polo</title></head>
+<body>
+    <h1>Camiseta Polo</h1>
+    <div class="product-price">R$ 149,90</div>
+</body>
+</html>
+"""
+
+MULTI_CURRENCY_SEK_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Nordic Shop - Ullkofta</title></head>
+<body>
+    <h1>Ullkofta</h1>
+    <div class="current-price">799 kr</div>
+</body>
+</html>
+"""
+
+MULTI_CURRENCY_PLN_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Sklep Polski - Buty Sportowe</title></head>
+<body>
+    <h1>Buty Sportowe</h1>
+    <div class="price-value">349 zł</div>
+</body>
+</html>
+"""
+
+MULTI_CURRENCY_KES_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Nairobi Mart - Coffee Beans</title></head>
+<body>
+    <h1>Nairobi Premium Coffee Beans 1kg</h1>
+    <div class="price">KSh 2,800</div>
+</body>
+</html>
+"""
+
 
 # ============================================================================
 # Platform Detection Tests
@@ -945,4 +1072,91 @@ async def test_discover_products_custom_store_end_to_end():
         assert res.total_found >= 1
         assert res.products[0].name == "Handcrafted Ceramic Mug"
         assert res.products[0].price == Decimal("34.50")
+
+
+@pytest.mark.asyncio
+async def test_detect_headless_nuxt_shopify():
+    """Verify Nuxt / Vue Storefront storefronts with Shopify backend are classified as headless Shopify."""
+    url = "https://nuxt-store.example.com"
+    result = await detect_store(url, html=HEADLESS_NUXT_SHOPIFY_HTML)
+
+    assert result.platform == "shopify"
+    assert result.platform_label == "Shopify (Headless)"
+    assert result.is_headless is True
+    assert any("shopify" in s for s in result.matched_signals)
+
+
+@pytest.mark.asyncio
+async def test_detect_headless_faust_woocommerce():
+    """Verify Faust.js headless WordPress storefronts are classified as headless WooCommerce."""
+    url = "https://keebs.com"
+    result = await detect_store(url, html=HEADLESS_FAUST_WOOCOMMERCE_HTML)
+
+    assert result.platform == "woocommerce"
+    assert result.platform_label == "WooCommerce (Headless)"
+    assert result.is_headless is True
+    assert any(s in result.matched_signals for s in ("faustjs", "wpgraphql"))
+
+
+def test_extract_price_magento_init():
+    """Verify fallback price extraction from script[type='text/x-magento-init']."""
+    price, currency = extract_price_from_html(GENERIC_MAGENTO_INIT_HTML, retailer="unknown")
+    assert price == Decimal("249.95")
+    assert currency == "USD"
+
+
+def test_extract_price_del_ins_sale_priority():
+    """Verify active sale price in <ins> is preferred over stricken <del> original price."""
+    price, currency = extract_price_from_html(GENERIC_DEL_INS_SALE_HTML, retailer="unknown")
+    assert price == Decimal("175.00")
+    assert currency == "USD"
+
+
+def test_extract_price_international_currencies_from_html():
+    """Verify extraction of Brazilian Real, Swedish Krona, Polish Zloty, and Kenyan Shilling."""
+    brl_price, brl_curr = extract_price_from_html(MULTI_CURRENCY_BRL_HTML, retailer="unknown")
+    assert brl_price == Decimal("149.90")
+    assert brl_curr == "BRL"
+
+    sek_price, sek_curr = extract_price_from_html(MULTI_CURRENCY_SEK_HTML, retailer="unknown")
+    assert sek_price == Decimal("799")
+    assert sek_curr == "SEK"
+
+    pln_price, pln_curr = extract_price_from_html(MULTI_CURRENCY_PLN_HTML, retailer="unknown")
+    assert pln_price == Decimal("349")
+    assert pln_curr == "PLN"
+
+    kes_price, kes_curr = extract_price_from_html(MULTI_CURRENCY_KES_HTML, retailer="unknown")
+    assert kes_price == Decimal("2800")
+    assert kes_curr == "KES"
+
+
+def test_detect_store_endpoint_transparency(client):
+    """Verify POST /api/stores/detect returns transparent platform, label, confidence, and signals."""
+    from app.core.security import create_access_token
+    token = create_access_token({"sub": "test-user-id", "email": "test@example.com"})
+
+    with patch("app.api.routes.discovery.detect_store", new_callable=AsyncMock) as mock_ds:
+        mock_ds.return_value = DetectionResult(
+            platform="shopify",
+            platform_label="Shopify (Headless)",
+            confidence=0.92,
+            is_headless=True,
+            matched_signals=["custom_subdomain", "storefront_api_2024-01"],
+        )
+
+        response = client.post(
+            "/api/stores/detect",
+            json={"url": "https://store.brand.com/products/item"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["url"] == "https://store.brand.com/products/item"
+        assert data["platform"] == "shopify"
+        assert data["platform_label"] == "Shopify (Headless)"
+        assert data["confidence"] == 0.92
+        assert data["is_headless"] is True
+        assert "custom_subdomain" in data["matched_signals"]
 

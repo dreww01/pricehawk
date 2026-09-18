@@ -13,6 +13,29 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
 ]
 
+COMMERCE_SUBDOMAINS = {
+    "shop", "store", "buy", "checkout", "products", "cart",
+    "catalog", "order", "commerce", "ecommerce", "merch",
+    "market", "outlet", "boutique", "app", "online",
+}
+
+
+def is_commerce_subdomain(hostname: str) -> bool:
+    """Check if a hostname contains commerce-related subdomain prefixes or words."""
+    if not hostname:
+        return False
+    clean_host = hostname.lower().split(":")[0]
+    parts = clean_host.split(".")
+    if len(parts) >= 2:
+        for part in parts[:-2] if len(parts) > 2 else [parts[0]]:
+            if part in COMMERCE_SUBDOMAINS:
+                return True
+            if any(part.startswith(p) for p in ("shop-", "store-", "buy-", "cart-", "merch-", "outlet-")):
+                return True
+            if any(part.endswith(s) for s in ("-shop", "-store", "-cart", "-merch", "-outlet")):
+                return True
+    return False
+
 
 @dataclass
 class DiscoveredProduct:

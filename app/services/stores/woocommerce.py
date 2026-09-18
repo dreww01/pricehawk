@@ -1,7 +1,7 @@
 from decimal import Decimal
 from urllib.parse import urljoin, urlparse
 
-from app.services.stores.base import BaseStoreHandler, DiscoveredProduct
+from app.services.stores.base import BaseStoreHandler, DiscoveredProduct, is_commerce_subdomain
 
 
 class WooCommerceHandler(BaseStoreHandler):
@@ -13,10 +13,12 @@ class WooCommerceHandler(BaseStoreHandler):
     # API endpoints in order of preference
     API_ENDPOINTS = [
         "/wp-json/wc/store/products",
+        "/wp-json/wc/store/v1/products",
         "/wp-json/wc/v3/products",
         "/wp-json/wc/v2/products",
         "/?rest_route=/wc/store/products",
         "/?rest_route=/wc/v3/products",
+        "/index.php?rest_route=/wc/store/products",
         "/wp-json/cocart/v2/products",
     ]
 
@@ -32,24 +34,33 @@ class WooCommerceHandler(BaseStoreHandler):
 
         parsed = urlparse(url)
         netloc = parsed.netloc.lower()
+        hostname = (parsed.hostname or "").lower()
         base_url = f"{parsed.scheme}://{parsed.netloc}"
         path = parsed.path.rstrip("/")
+        query = (parsed.query or "").lower()
 
         self.matched_signals = []
         self.is_headless = False
 
         # Signal check: custom commerce subdomain
-        if any(netloc.startswith(prefix) for prefix in ("shop.", "store.", "wp.", "cms.")):
+        if is_commerce_subdomain(hostname) or any(hostname.startswith(prefix) for prefix in ("wp.", "cms.")):
             self.matched_signals.append("custom_subdomain")
 
         # Signal check: alternative WooCommerce URL patterns
-        query = parsed.query or ""
+        woo_path_patterns = (
+            "/product/", "/product-category/", "/product-tag/", "/shop/",
+            "/produkt/", "/produit/", "/producto/",
+        )
         if (
-            any(p in path for p in ("/product/", "/product-category/", "/shop/"))
-            or path.endswith(("/product", "/shop"))
+            any(p in path for p in woo_path_patterns)
+            or path.endswith(("/product", "/shop", "/cart", "/checkout"))
             or "post_type=product" in query
             or "product=" in query
+            or "product_id=" in query
             or "rest_route=/wc" in query
+            or "wc-api=" in query
+            or "wc-ajax=" in query
+            or "add-to-cart=" in query
         ):
             self.matched_signals.append("woocommerce_url_pattern")
 
@@ -126,6 +137,15 @@ class WooCommerceHandler(BaseStoreHandler):
             if self._inspect_woocommerce_html(page_html):
                 return True
 
+        # Slow path with Playwright for JS-rendered frontends or protected sites
+        try:
+            from app.services.scraper_service import fetch_with_playwright
+            pw_html = await fetch_with_playwright(base_url)
+            if pw_html and self._inspect_woocommerce_html(pw_html):
+                return True
+        except Exception:
+            pass
+
         return False
 
     def _inspect_woocommerce_html(self, html: str) -> bool:
@@ -135,23 +155,39 @@ class WooCommerceHandler(BaseStoreHandler):
 
         html_lower = html.lower()
 
-        # Headless WooCommerce indicators (WPGraphQL, CoCart, Next.js WooCommerce, etc.)
+        # Headless WooCommerce indicators (WPGraphQL, CoCart, Next.js WooCommerce, Faust.js, Frontity, etc.)
         headless_signals = []
         headless_indicators = [
             ("woographql", "woographql"),
             ("wpgraphql", "wpgraphql"),
             ("wpgraphql", "wp-graphql"),
+            ("wpgraphql", "wp-graphql-woocommerce"),
             ("cocart", "cocart"),
+            ("cocart", "cocart-api"),
             ("wc_store_api", "/wp-json/wc/store"),
             ("wc_store_api", "wc-store-api"),
+            ("faustjs", "faustjs"),
+            ("faustjs", "@faustwp"),
+            ("frontity", "frontity"),
+            ("frontity", "wp-frontity"),
+            ("woocommerce_store_client", "@woocommerce/store-client"),
+            ("gatsby_woocommerce", "gatsby-source-woocommerce"),
+            ("gatsby_woocommerce", "gatsby-source-wordpress"),
+            ("nuxt_woocommerce", "nuxt-woocommerce"),
+            ("nuxt_woocommerce", "@nuxtjs/woocommerce"),
         ]
         for sig_name, marker in headless_indicators:
             if marker in html_lower and sig_name not in headless_signals:
                 headless_signals.append(sig_name)
 
-        if '__next_data__' in html_lower and any(k in html_lower for k in ("woographql", "wpgraphql", "cocart", "woocommerce")):
-            if "nextjs_woocommerce" not in headless_signals:
+        # Check hydration data
+        hydration_contexts = ('__next_data__', '__nuxt_data__', '__nuxt__', '__remix_context__', 'window.__initial_state__', 'window.__preloaded_state__')
+        has_hydration_script = any(ctx in html_lower for ctx in hydration_contexts)
+        if has_hydration_script and any(k in html_lower for k in ("woographql", "wpgraphql", "cocart", "woocommerce", "wc-store-api", "wp-graphql")):
+            if "nextjs_woocommerce" not in headless_signals and '__next_data__' in html_lower:
                 headless_signals.append("nextjs_woocommerce")
+            elif "headless_hydration_woocommerce" not in headless_signals:
+                headless_signals.append("headless_hydration_woocommerce")
 
         # Standard / Classic WooCommerce signatures
         signals = []
@@ -159,7 +195,13 @@ class WooCommerceHandler(BaseStoreHandler):
             signals.append("wp_woocommerce_assets")
         if 'name="generator" content="woocommerce' in html_lower or "generator\" content=\"woocommerce" in html_lower:
             signals.append("woocommerce_generator_meta")
-        if "woocommerce-price-amount" in html_lower or "woocommerce-price-currencysymbol" in html_lower or "wc-block" in html_lower:
+        if (
+            "woocommerce-price-amount" in html_lower
+            or "woocommerce-price-currencysymbol" in html_lower
+            or "wc-block" in html_lower
+            or "wc-block-components" in html_lower
+            or "woocommerce-product-gallery" in html_lower
+        ):
             signals.append("woocommerce_css_classes")
         if "wc_add_to_cart_params" in html_lower or "woocommerce_params" in html_lower or "wc_cart_fragments_params" in html_lower or "wcsettings" in html_lower:
             signals.append("woocommerce_js_params")

@@ -2,7 +2,7 @@ import json
 from decimal import Decimal
 from urllib.parse import urljoin, urlparse
 
-from app.services.stores.base import BaseStoreHandler, DiscoveredProduct
+from app.services.stores.base import BaseStoreHandler, DiscoveredProduct, is_commerce_subdomain
 
 
 class ShopifyHandler(BaseStoreHandler):
@@ -28,24 +28,34 @@ class ShopifyHandler(BaseStoreHandler):
 
         parsed = urlparse(url)
         netloc = parsed.netloc.lower()
+        hostname = (parsed.hostname or "").lower()
         base_url = f"{parsed.scheme}://{parsed.netloc}"
         path = parsed.path.rstrip("/")
+        query = (parsed.query or "").lower()
 
         self.matched_signals = []
         self.is_headless = False
 
         # Signal check 1: myshopify.com domain
-        if netloc.endswith("myshopify.com"):
+        if hostname.endswith("myshopify.com"):
             self.matched_signals.append("myshopify_domain")
             self.platform_label = "Shopify"
             self.confidence = 0.95
 
         # Signal check: custom commerce subdomain
-        if any(netloc.startswith(prefix) for prefix in ("shop.", "store.", "buy.", "checkout.", "products.")):
+        if is_commerce_subdomain(hostname):
             self.matched_signals.append("custom_subdomain")
 
         # Signal check: alternative / classic Shopify URL patterns
-        if any(p in path for p in ("/products/", "/collections/")) or path.endswith(("/products", "/collections")):
+        shopify_path_patterns = (
+            "/products/", "/collections/", "/checkouts/", "/cart/",
+            "/produkte/", "/produits/", "/productos/", "/prodotti/",
+        )
+        if (
+            any(p in path for p in shopify_path_patterns)
+            or path.endswith(("/products", "/collections", "/cart"))
+            or "variant=" in query
+        ):
             self.matched_signals.append("shopify_url_pattern")
 
         # If HTML is provided directly, inspect it first without network I/O
@@ -63,11 +73,20 @@ class ShopifyHandler(BaseStoreHandler):
         # Fast path via /products.json API (classic Shopify)
         client = await self._get_client()
         urls_to_try = [f"{base_url}/products.json?limit=1"]
-        # If there's a subpath (e.g. /uk, /shop, /en-us), also probe subpath
-        if path and not path.startswith("/products"):
-            subpath_candidate = path.split("/products")[0] if "/products" in path else path
-            if subpath_candidate and subpath_candidate != "/":
-                urls_to_try.append(f"{base_url}{subpath_candidate}/products.json?limit=1")
+        # Extract possible language / country / subpath prefixes
+        path_parts = [p for p in path.split("/") if p]
+        if path_parts:
+            first_segment = f"/{path_parts[0]}"
+            if first_segment not in ("/products", "/collections", "/cart", "/checkouts"):
+                urls_to_try.append(f"{base_url}{first_segment}/products.json?limit=1")
+            if "collections" in path_parts:
+                try:
+                    idx = path_parts.index("collections")
+                    if idx + 1 < len(path_parts):
+                        coll_handle = path_parts[idx + 1]
+                        urls_to_try.append(f"{base_url}/collections/{coll_handle}/products.json?limit=1")
+                except ValueError:
+                    pass
 
         for test_url in urls_to_try:
             try:
@@ -84,7 +103,7 @@ class ShopifyHandler(BaseStoreHandler):
                 pass
 
         # Storefront GraphQL API probe (Hydrogen and headless Shopify)
-        storefront_versions = ["2024-01", "unstable", "2023-10"]
+        storefront_versions = ["2024-10", "2024-07", "2024-04", "2024-01", "unstable", "2023-10"]
         for version in storefront_versions:
             try:
                 api_url = f"{base_url}/api/{version}/graphql.json"
@@ -93,10 +112,11 @@ class ShopifyHandler(BaseStoreHandler):
                     json={"query": "{ shop { name } }"},
                     headers={"Content-Type": "application/json", "Accept": "application/json"},
                 )
-                if sf_res.status_code in (200, 400, 401):
-                    # Check if GraphQL response structure or shopify header exists
+                if sf_res.status_code in (200, 400, 401, 403):
                     res_text = sf_res.text.lower()
-                    if "data" in res_text or "errors" in res_text or "shopify" in sf_res.headers.get("server", "").lower():
+                    headers_lower = {k.lower(): v.lower() for k, v in sf_res.headers.items()}
+                    has_sf_header = any(h.startswith("x-shopify") or h == "x-shopid" for h in headers_lower) or "shopify" in headers_lower.get("server", "")
+                    if "data" in res_text or "errors" in res_text or has_sf_header or "shopify" in res_text or "storefront" in res_text:
                         self.matched_signals.append(f"storefront_api_{version}")
                         self.is_headless = True
                         self.platform_label = "Shopify (Headless)"
@@ -154,20 +174,38 @@ class ShopifyHandler(BaseStoreHandler):
             ("hydrogen", "@shopify/hydrogen"),
             ("hydrogen", "remix-oxygen"),
             ("hydrogen", "oxygen-v1"),
+            ("hydrogen", "oxygen-v2"),
             ("hydrogen", "<!-- hydrogen -->"),
+            ("hydrogen", "shopify.oxygen"),
+            ("hydrogen", "oxygen.shopify"),
+            ("hydrogen", "remix_oxygen"),
+            ("hydrogen", "data-hydrogen"),
             ("shopify_buy_sdk", "shopifybuy"),
             ("shopify_buy_sdk", "shopify-buy"),
+            ("shopify_buy_sdk", "sdks.shopifycdn.com"),
+            ("shopify_buy_sdk", "shopifybuy.buildclient"),
             ("storefront_api", "storefront.shopify.com"),
             ("storefront_api", "x-shopify-storefront-access-token"),
             ("storefront_api", "shopify-storefront-access-token"),
             ("storefront_api", "shopify-storefront-api"),
             ("storefront_api", "@shopify/storefront-api-client"),
+            ("storefront_api", "@shopify/storefront-api-utilities"),
             ("storefront_api", "shopifystorefront"),
+            ("storefront_api", "storefrontaccesstoken"),
             ("nextjs_shopify", "nextjs-commerce"),
             ("nextjs_shopify", "@vercel/commerce-shopify"),
+            ("nextjs_shopify", "shopify-commerce"),
             ("shopify_dev_host", "__shopify_dev_host__"),
             ("hydrogen_state", "__hydrogen_state__"),
             ("gatsby_shopify", "gatsby-source-shopify"),
+            ("gatsby_shopify", "gatsby-plugin-shopify"),
+            ("nuxt_shopify", "@vue-storefront/shopify"),
+            ("nuxt_shopify", "nuxt-shopify"),
+            ("nuxt_shopify", "@nuxt/shopify"),
+            ("nuxt_shopify", "vsf-shopify"),
+            ("astro_shopify", "astro-shopify"),
+            ("svelte_shopify", "svelte-shopify"),
+            ("gid_shopify", "gid://shopify/"),
         ]
         for sig_name, marker in headless_indicators:
             if marker in html_lower and sig_name not in headless_signals:
@@ -185,15 +223,23 @@ class ShopifyHandler(BaseStoreHandler):
             signals.append("shopify_meta_attributes")
         if "shopify-payment-button" in html_lower or "shopify-section" in html_lower or "shopify-section-" in html_lower:
             signals.append("shopify_theme_markup")
-        if "checkout.shopify.com" in html_lower or "myshopify.com" in html_lower:
+        if (
+            "checkout.shopify.com" in html_lower
+            or "myshopify.com" in html_lower
+            or "shop.app/checkout" in html_lower
+        ):
             signals.append("shopify_checkout_ref")
         if 'name="generator" content="shopify' in html_lower or 'content="shopify' in html_lower:
             signals.append("shopify_generator_meta")
 
-        # Check if Next.js hydration data contains Shopify references
-        if '__next_data__' in html_lower and any(k in html_lower for k in ("myshopify.com", "shopify", "storefront")):
-            if "nextjs_shopify" not in headless_signals:
+        # Check if hydration data contains Shopify references
+        hydration_contexts = ('__next_data__', '__nuxt_data__', '__nuxt__', '__remix_context__', 'window.__initial_state__', 'window.__preloaded_state__')
+        has_hydration_script = any(ctx in html_lower for ctx in hydration_contexts)
+        if has_hydration_script and any(k in html_lower for k in ("myshopify.com", "shopify", "storefront", "shopifystorefront", "gid://shopify/")):
+            if "nextjs_shopify" not in headless_signals and '__next_data__' in html_lower:
                 headless_signals.append("nextjs_shopify")
+            elif "headless_hydration_shopify" not in headless_signals:
+                headless_signals.append("headless_hydration_shopify")
 
         all_signals = list(dict.fromkeys(headless_signals + signals))
 
