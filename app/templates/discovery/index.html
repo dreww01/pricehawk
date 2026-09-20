@@ -294,7 +294,9 @@
             selectedUrls.clear();
 
             resultsCount.textContent = data.total_found || discoveredProducts.length;
-            platformName.textContent = data.platform || 'Unknown';
+            const platformLabel = data.platform_label || data.platform || 'Unknown';
+            const conf = (data.confidence !== undefined && data.confidence !== null) ? Math.round(data.confidence * 100) : null;
+            platformName.textContent = conf !== null ? `${platformLabel} (${conf}% confidence)` : platformLabel;
 
             if (discoveredProducts.length === 0) {
                 errorMessage.textContent = 'No products found. Try a different URL or keyword.';
@@ -355,7 +357,7 @@
                         <input type="checkbox" class="product-checkbox w-4 h-4 rounded border-gray-300 text-accent focus:ring-accent/50" data-url="${escapeHtml(product.product_url)}" data-index="${index}" ${selectedUrls.has(product.product_url) ? 'checked' : ''} onchange="toggleProduct(this)" />
                     </div>
                     <div class="absolute top-2 right-2">
-                        <span class="px-2 py-0.5 text-xs font-medium bg-gray-900/70 text-white rounded-full">${escapeHtml(product.platform)}</span>
+                        <span class="px-2 py-0.5 text-xs font-medium bg-gray-900/70 text-white rounded-full">${escapeHtml(product.platform_label || product.platform)}</span>
                     </div>
                 </div>
                 <div class="p-4">
@@ -393,7 +395,7 @@
                         <div class="flex flex-wrap items-center gap-2 mt-1">
                             <span class="text-accent font-semibold">${priceDisplay}</span>
                             ${stockBadge}
-                            <span class="px-2 py-0.5 text-xs font-medium bg-gray-100 dark:bg-dark-border text-gray-600 dark:text-gray-400 rounded-full">${escapeHtml(product.platform)}</span>
+                            <span class="px-2 py-0.5 text-xs font-medium bg-gray-100 dark:bg-dark-border text-gray-600 dark:text-gray-400 rounded-full">${escapeHtml(product.platform_label || product.platform)}</span>
                         </div>
                     </div>
                     <a href="${escapeHtml(product.product_url)}" target="_blank" class="p-2 text-gray-400 hover:text-accent flex-shrink-0">

@@ -30,16 +30,21 @@ class DiscoveredProduct:
     tags: list[str] = field(default_factory=list)
     description: str | None = None
     raw_data: dict = field(default_factory=dict)
+    platform_label: str | None = None
+    confidence: float | None = None
 
 
 class BaseStoreHandler(ABC):
     """Abstract base class for store handlers."""
 
     platform_name: str = "unknown"
+    platform_label: str = "Unknown"
+    confidence: float = 0.0
 
     def __init__(self, timeout: float = 30.0):
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self.signatures: list[str] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""

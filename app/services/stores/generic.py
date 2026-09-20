@@ -8,9 +8,11 @@ from app.services.stores.base import BaseStoreHandler, DiscoveredProduct
 
 
 class GenericHandler(BaseStoreHandler):
-    """Fallback handler for unknown store types using common HTML patterns."""
+    """Fallback handler for unknown store types using common HTML patterns and web heuristics."""
 
     platform_name = "custom"
+    platform_label = "Custom / Web Heuristics"
+    confidence = 0.50
 
     # Common product card selectors
     PRODUCT_SELECTORS = [
@@ -59,10 +61,15 @@ class GenericHandler(BaseStoreHandler):
     ]
 
     async def detect(self, url: str) -> bool:
-        """Generic handler accepts any URL as fallback."""
+        """Generic handler accepts any valid URL as fallback."""
         # Check if URL is valid HTTPS
         parsed = urlparse(url)
-        return parsed.scheme == "https" and bool(parsed.netloc)
+        is_valid = parsed.scheme == "https" and bool(parsed.netloc)
+        if is_valid:
+            self.platform_label = "Custom / Web Heuristics"
+            self.confidence = 0.50
+            self.signatures = ["fallback:generalized_heuristics"]
+        return is_valid
 
     async def fetch_products(
         self,
@@ -94,7 +101,7 @@ class GenericHandler(BaseStoreHandler):
         # Try each product selector
         for selector in self.PRODUCT_SELECTORS:
             cards = soup.select(selector)
-            if len(cards) >= 2:
+            if len(cards) >= 1:
                 for card in cards:
                     product = self._parse_product_card(card, base_url)
                     if product:
@@ -167,6 +174,8 @@ class GenericHandler(BaseStoreHandler):
                 image_url=image_url,
                 product_url=product_url,
                 platform=self.platform_name,
+                platform_label=self.platform_label,
+                confidence=self.confidence,
             )
 
         except Exception:
@@ -209,17 +218,23 @@ class GenericHandler(BaseStoreHandler):
 
         # Detect currency
         currency = "USD"
-        if "£" in text:
+        if "₦" in text or "NGN" in text.upper():
+            currency = "NGN"
+        elif "£" in text or "GBP" in text.upper():
             currency = "GBP"
-        elif "€" in text:
+        elif "€" in text or "EUR" in text.upper():
             currency = "EUR"
-        elif "¥" in text:
+        elif "CAD" in text.upper() or "C$" in text:
+            currency = "CAD"
+        elif "AUD" in text.upper() or "A$" in text:
+            currency = "AUD"
+        elif "¥" in text or "JPY" in text.upper():
             currency = "JPY"
-        elif "₹" in text:
+        elif "₹" in text or "INR" in text.upper():
             currency = "INR"
 
         # Clean price
-        cleaned = re.sub(r"[£€$¥₹,\s]", "", text)
+        cleaned = re.sub(r"[£€$¥₹₦,\s]", "", text)
         cleaned = re.sub(r"[A-Za-z]", "", cleaned)
 
         # Handle decimal formats
@@ -239,12 +254,40 @@ class GenericHandler(BaseStoreHandler):
         except Exception:
             return None, currency
 
+    def _extract_items_from_json_ld(self, data: object) -> list[dict]:
+        """Recursively extract Product and ItemList elements from JSON-LD, supporting @graph arrays."""
+        items: list[dict] = []
+        if isinstance(data, list):
+            for item in data:
+                items.extend(self._extract_items_from_json_ld(item))
+        elif isinstance(data, dict):
+            # Support Schema.org @graph
+            if "@graph" in data:
+                items.extend(self._extract_items_from_json_ld(data["@graph"]))
+
+            t = data.get("@type")
+            types: list[str] = []
+            if isinstance(t, str):
+                types = [t.lower()]
+            elif isinstance(t, list):
+                types = [str(x).lower() for x in t]
+
+            if any(x == "product" or x.endswith("/product") for x in types):
+                items.append(data)
+            elif any(x == "itemlist" or x.endswith("/itemlist") for x in types):
+                items.extend(self._extract_items_from_json_ld(data.get("itemListElement", [])))
+
+            if "item" in data and isinstance(data["item"], dict):
+                items.extend(self._extract_items_from_json_ld(data["item"]))
+
+        return items
+
     def _parse_schema_products(
         self,
         soup: BeautifulSoup,
         base_url: str,
     ) -> list[DiscoveredProduct]:
-        """Parse products from schema.org JSON-LD markup."""
+        """Parse products from schema.org JSON-LD markup, supporting @graph and modern schemas."""
         products: list[DiscoveredProduct] = []
 
         # Find JSON-LD scripts
@@ -253,17 +296,10 @@ class GenericHandler(BaseStoreHandler):
         for script in scripts:
             try:
                 import json
+                if not script.string:
+                    continue
                 data = json.loads(script.string)
-
-                # Handle single product or array
-                items = []
-                if isinstance(data, list):
-                    items = data
-                elif isinstance(data, dict):
-                    if data.get("@type") == "Product":
-                        items = [data]
-                    elif data.get("@type") == "ItemList":
-                        items = data.get("itemListElement", [])
+                items = self._extract_items_from_json_ld(data)
 
                 for item in items:
                     product = self._parse_schema_product(item, base_url)
@@ -280,10 +316,10 @@ class GenericHandler(BaseStoreHandler):
         data: dict,
         base_url: str,
     ) -> DiscoveredProduct | None:
-        """Parse a single schema.org Product."""
+        """Parse a single schema.org Product with Offer or AggregateOffer."""
         try:
             # Handle ItemList wrapper
-            if "item" in data:
+            if "item" in data and isinstance(data["item"], dict):
                 data = data["item"]
 
             name = data.get("name", "")
@@ -300,14 +336,14 @@ class GenericHandler(BaseStoreHandler):
             if isinstance(image, dict):
                 image = image.get("url", "")
 
-            # Price from offers
+            # Price from offers (supports Offer and AggregateOffer)
             offers = data.get("offers", {})
             if isinstance(offers, list):
                 offers = offers[0] if offers else {}
 
             price = None
             currency = offers.get("priceCurrency", "USD")
-            price_val = offers.get("price")
+            price_val = offers.get("price") or offers.get("lowPrice") or offers.get("highPrice")
             if price_val:
                 try:
                     price = Decimal(str(price_val))
@@ -321,6 +357,8 @@ class GenericHandler(BaseStoreHandler):
                 image_url=image if image else None,
                 product_url=product_url,
                 platform=self.platform_name,
+                platform_label=self.platform_label,
+                confidence=self.confidence,
                 sku=data.get("sku"),
                 raw_data=data,
             )

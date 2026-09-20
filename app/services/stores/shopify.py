@@ -14,29 +14,91 @@ class ShopifyHandler(BaseStoreHandler):
     """
 
     platform_name = "shopify"
+    platform_label = "Shopify"
+    confidence = 0.95
 
     async def detect(self, url: str) -> bool:
-        """Check if store is Shopify via API or HTML inspection."""
+        """Check if store is Shopify via API, URL, or HTML inspection."""
+        from app.services.store_detector import (
+            classify_platform_from_url,
+            classify_platform_from_html,
+        )
+
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-        # Fast path: try /products.json API
+        # 1. URL pattern check (e.g. *.myshopify.com)
+        url_classification = classify_platform_from_url(url)
+        if url_classification and url_classification[0] == "shopify" and url_classification[2] >= 0.95:
+            self.platform_label = url_classification[1]
+            self.confidence = url_classification[2]
+            self.signatures = url_classification[3]
+            return True
+
+        client = await self._get_client()
+
+        # 2. Fast path: try /products.json API
         try:
-            client = await self._get_client()
-            response = await client.get(f"{base_url}/products.json?limit=1")
-            if response.status_code == 200:
-                data = response.json()
-                if "products" in data:
+            test_urls = [f"{base_url}/products.json?limit=1"]
+            clean_path = parsed.path.rstrip("/")
+            if clean_path and clean_path != "/":
+                test_urls.append(f"{base_url}{clean_path}/products.json?limit=1")
+
+            for p_url in test_urls:
+                response = await client.get(p_url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict) and "products" in data:
+                        self.platform_label = "Shopify"
+                        self.confidence = 0.98
+                        self.signatures = ["shopify:products_json_api"]
+                        return True
+        except Exception:
+            pass
+
+        # 3. Fast path for headless Shopify: test Storefront GraphQL API
+        try:
+            for version in ["unstable", "2024-01"]:
+                graphql_url = f"{base_url}/api/{version}/graphql.json"
+                response = await client.post(
+                    graphql_url,
+                    json={"query": "{ shop { name } }"},
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if isinstance(data, dict) and ("data" in data or "errors" in data):
+                        self.platform_label = "Shopify (Headless)"
+                        self.confidence = 0.95
+                        self.signatures = ["shopify:storefront_api"]
+                        return True
+        except Exception:
+            pass
+
+        # 4. Fast HTML fetch via httpx
+        try:
+            response = await client.get(url)
+            if response.status_code == 200 and response.text:
+                platform, label, conf, sigs = classify_platform_from_html(response.text, url)
+                if platform == "shopify" and conf >= 0.70:
+                    self.platform_label = label
+                    self.confidence = conf
+                    self.signatures = sigs
                     return True
         except Exception:
             pass
 
-        # Slow path: Playwright for Cloudflare-protected sites
+        # 5. Slow path: Playwright for Cloudflare-protected or JS-rendered sites
         try:
             from app.services.scraper_service import fetch_with_playwright
             html = await fetch_with_playwright(base_url)
             if html:
-                return "cdn.shopify" in html or "Shopify.theme" in html
+                platform, label, conf, sigs = classify_platform_from_html(html, url)
+                if platform == "shopify" and conf >= 0.70:
+                    self.platform_label = label
+                    self.confidence = conf
+                    self.signatures = sigs
+                    return True
         except Exception:
             pass
 
@@ -305,6 +367,8 @@ class ShopifyHandler(BaseStoreHandler):
                 tags=tags,
                 description=description,
                 raw_data=node,
+                platform_label=self.platform_label,
+                confidence=self.confidence,
             )
 
         except Exception:
@@ -358,6 +422,8 @@ class ShopifyHandler(BaseStoreHandler):
                 tags=tags,
                 description=description,
                 raw_data=data,
+                platform_label=self.platform_label,
+                confidence=self.confidence,
             )
 
         except Exception:

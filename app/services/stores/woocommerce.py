@@ -8,33 +8,75 @@ class WooCommerceHandler(BaseStoreHandler):
     """Handler for WooCommerce stores using Store API or REST API."""
 
     platform_name = "woocommerce"
+    platform_label = "WooCommerce"
+    confidence = 0.95
 
     # API endpoints in order of preference
     API_ENDPOINTS = [
         "/wp-json/wc/store/products",
+        "/wp-json/wc/store/v1/products",
         "/wp-json/wc/v3/products",
         "/wp-json/wc/v2/products",
+        "/?rest_route=/wc/store/products",
+        "/?rest_route=/wc/v3/products",
     ]
 
     async def detect(self, url: str) -> bool:
-        """Check if store is WooCommerce by testing API endpoints."""
+        """Check if store is WooCommerce by testing API endpoints, URL patterns, or HTML."""
+        from app.services.store_detector import (
+            classify_platform_from_url,
+            classify_platform_from_html,
+        )
+
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
 
+        # 1. URL pattern check
+        url_classification = classify_platform_from_url(url)
+        if url_classification and url_classification[0] == "woocommerce" and url_classification[2] >= 0.90:
+            self.platform_label = url_classification[1]
+            self.confidence = url_classification[2]
+            self.signatures = url_classification[3]
+            return True
+
         client = await self._get_client()
 
-        for endpoint in self.API_ENDPOINTS:
-            try:
-                test_url = f"{base_url}{endpoint}?per_page=1"
-                response = await client.get(test_url)
+        # 2. Test API endpoints at base URL and subpath if present
+        prefixes = [base_url]
+        clean_path = parsed.path.rstrip("/")
+        if clean_path and clean_path != "/":
+            prefixes.append(f"{base_url}{clean_path}")
 
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list) and len(data) > 0:
-                        return True
+        for prefix in prefixes:
+            for endpoint in self.API_ENDPOINTS:
+                try:
+                    sep = "&" if "?" in endpoint else "?"
+                    test_url = f"{prefix}{endpoint}{sep}per_page=1"
+                    response = await client.get(test_url)
 
-            except Exception:
-                continue
+                    if response.status_code == 200:
+                        data = response.json()
+                        if isinstance(data, list) and len(data) > 0:
+                            self.platform_label = "WooCommerce"
+                            self.confidence = 0.98
+                            self.signatures = [f"woocommerce:api_{endpoint}"]
+                            return True
+
+                except Exception:
+                    continue
+
+        # 3. Fast HTML fetch via httpx
+        try:
+            response = await client.get(url)
+            if response.status_code == 200 and response.text:
+                platform, label, conf, sigs = classify_platform_from_html(response.text, url)
+                if platform == "woocommerce" and conf >= 0.70:
+                    self.platform_label = label
+                    self.confidence = conf
+                    self.signatures = sigs
+                    return True
+        except Exception:
+            pass
 
         return False
 
@@ -179,6 +221,8 @@ class WooCommerceHandler(BaseStoreHandler):
                 description=description,
                 tags=tags,
                 raw_data=data,
+                platform_label=self.platform_label,
+                confidence=self.confidence,
             )
 
         except Exception:
@@ -227,6 +271,8 @@ class WooCommerceHandler(BaseStoreHandler):
                 description=description,
                 tags=tags,
                 raw_data=data,
+                platform_label=self.platform_label,
+                confidence=self.confidence,
             )
 
         except Exception:

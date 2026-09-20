@@ -20,6 +20,8 @@ class DiscoveredProductResponse(BaseModel):
     image_url: str | None
     product_url: str
     platform: str
+    platform_label: str | None = None
+    confidence: float | None = None
     variant_id: str | None = None
     sku: str | None = None
     in_stock: bool = True
@@ -54,6 +56,8 @@ class StoreDiscoveryResponse(BaseModel):
     total_found: int
     products: list[DiscoveredProductResponse]
     error: str | None = None
+    platform_label: str = "Custom / Web Heuristics"
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class TrackProductItem(BaseModel):
