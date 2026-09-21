@@ -5,10 +5,11 @@ Handles user alert settings, pending alerts, alert history, and test emails.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from supabase import Client
 
+from app.core.flash import flash
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_user_supabase_client, get_supabase_client
 from app.db.models import (
@@ -115,6 +116,7 @@ async def get_alert_settings(
 @router.put("/settings", response_model=AlertSettingsResponse)
 async def update_alert_settings(
     updates: AlertSettingsUpdate,
+    http_response: Response,
     sb: Client = Depends(get_user_supabase_client),
     current_user: CurrentUser = Depends(get_current_user)
 ):
@@ -208,6 +210,7 @@ async def update_alert_settings(
 
         if response.data:
             settings = response.data[0]
+            flash(http_response, "Alert settings saved successfully.", "success")
             return _settings_response(settings)
 
         raise HTTPException(
