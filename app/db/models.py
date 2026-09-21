@@ -299,6 +299,7 @@ class DigestRunResponse(BaseModel):
     webhook_sent: bool = False
     dry_run: bool = False
     skipped_reason: str | None = None
+    correlation_id: str | None = None
 
 
 class PendingAlertResponse(BaseModel):
@@ -357,6 +358,7 @@ class ScrapeTaskResponse(BaseModel):
     task_id: str
     status: str = "queued"
     message: str = "Scrape task queued"
+    correlation_id: str | None = None
 
 
 class ScrapeProgressResponse(BaseModel):
@@ -367,6 +369,7 @@ class ScrapeProgressResponse(BaseModel):
     current: str | None = None  # Current retailer being scraped
     results: list[dict] = []  # Completed results so far
     error: str | None = None
+    correlation_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

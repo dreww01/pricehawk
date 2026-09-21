@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.db.database import get_supabase_client
+from app.core.logging import correlation_context, get_correlation_id
 from app.services.email_service import EmailService
 from app.services.webhook_service import WebhookDeliveryError, WebhookService
 
@@ -31,6 +32,20 @@ class DigestService:
         self.lease_duration = lease_duration
 
     def run_for_user(
+        self,
+        user_id: str,
+        email: str | None,
+        *,
+        force: bool = False,
+        dry_run: bool = False,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        if correlation_id:
+            with correlation_context(correlation_id):
+                return self._run_for_user_impl(user_id, email, force=force, dry_run=dry_run)
+        return self._run_for_user_impl(user_id, email, force=force, dry_run=dry_run)
+
+    def _run_for_user_impl(
         self,
         user_id: str,
         email: str | None,
@@ -143,7 +158,7 @@ class DigestService:
                         payload = self.build_webhook_payload(digest_id, user_id, alerts, summary)
                         try:
                             webhook_result = self.webhook_service.send_digest(
-                                webhook_url, webhook_secret, payload
+                                webhook_url, webhook_secret, payload, correlation_id=get_correlation_id()
                             )
                         except WebhookDeliveryError as exc:
                             webhook_result = {"success": False, "error": str(exc)}

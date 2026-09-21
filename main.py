@@ -39,6 +39,7 @@ from app.core.errors import (
     map_error_to_code,
 )
 from app.core.flash import flash, FlashMiddleware
+from app.core.logging import setup_logging, CorrelationIdMiddleware, CORRELATION_ID_HEADER
 from app.core.security import get_safe_redirect_url, delete_access_token_cookie
 from app.core.version import APPLICATION_VERSION
 from app.db.models import HealthCheckResponse
@@ -51,15 +52,7 @@ from app.middleware.rate_limit import (
 
 settings = get_settings()
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-
-# Silence noisy third-party HTTP loggers
-for noisy_logger in ("httpx", "httpcore", "hpack"):
-    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +116,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[CORRELATION_ID_HEADER],
 )
+
+# Correlation ID middleware (outermost, establishes request correlation context)
+app.add_middleware(CorrelationIdMiddleware)
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(tracked_products.router, prefix="/api")

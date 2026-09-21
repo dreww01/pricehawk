@@ -2,6 +2,7 @@ from celery import Celery
 from celery.schedules import crontab
 
 from app.core.config import get_settings
+from app.core.logging import CorrelatedTask, register_celery_signals
 
 settings = get_settings()
 
@@ -10,7 +11,10 @@ celery_app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
     include=["app.tasks.scraper_tasks"],
+    task_cls=CorrelatedTask,
 )
+celery_app.Task = CorrelatedTask
+register_celery_signals(celery_app)
 
 celery_app.conf.update(
     # Task settings

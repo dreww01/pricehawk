@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from supabase import Client
 
 from app.core.flash import flash
+from app.core.logging import get_correlation_id
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_user_supabase_client, get_supabase_client
 from app.db.models import (
@@ -337,12 +338,14 @@ async def run_alert_digest(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only administrators may force a digest run",
             )
+        cid = get_correlation_id()
         return DigestRunResponse(
             **DigestService().run_for_user(
                 current_user.id,
                 current_user.email,
                 force=request.force,
                 dry_run=request.dry_run,
+                correlation_id=cid,
             )
         )
     except HTTPException:

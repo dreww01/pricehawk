@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 import httpcore
 import httpx
 
+from app.core.logging import get_correlation_id
+
 
 class WebhookDeliveryError(ValueError):
     """Raised when a webhook cannot be delivered safely."""
@@ -111,6 +113,7 @@ class WebhookService:
         webhook_url: str,
         webhook_secret: str,
         payload: dict[str, Any],
+        correlation_id: str | None = None,
     ) -> dict[str, Any]:
         allowed_ips = self._validate_url(webhook_url)
         if len(webhook_secret) < 16:
@@ -123,6 +126,16 @@ class WebhookService:
             webhook_secret.encode("utf-8"), signed_content, hashlib.sha256
         ).hexdigest()
 
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "PriceHawk-Webhooks/1.0",
+            "X-PriceHawk-Timestamp": timestamp,
+            "X-PriceHawk-Signature": f"sha256={signature}",
+        }
+        cid = correlation_id or get_correlation_id()
+        if cid:
+            headers["X-Correlation-ID"] = cid
+
         try:
             transport = SafeWebhookTransport(allowed_ips=allowed_ips)
             with httpx.Client(
@@ -133,12 +146,7 @@ class WebhookService:
                 response = client.post(
                     webhook_url,
                     content=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "User-Agent": "PriceHawk-Webhooks/1.0",
-                        "X-PriceHawk-Timestamp": timestamp,
-                        "X-PriceHawk-Signature": f"sha256={signature}",
-                    },
+                    headers=headers,
                 )
             response.raise_for_status()
         except WebhookDeliveryError:

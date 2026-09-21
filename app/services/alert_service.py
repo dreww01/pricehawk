@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.db.database import get_supabase_client
+from app.core.logging import correlation_context, get_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,8 @@ class AlertService:
         self,
         competitor_id: str,
         new_price: Decimal,
-        currency: str = "USD"
+        currency: str = "USD",
+        correlation_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Check if price changed beyond threshold and create pending alert.
@@ -58,6 +60,7 @@ class AlertService:
             competitor_id: UUID of competitor
             new_price: Newly scraped price
             currency: Currency code
+            correlation_id: Optional correlation ID for tracing
 
         Returns:
             dict with keys:
@@ -66,6 +69,17 @@ class AlertService:
                 - change_percent (Decimal | None): Percentage change
                 - message (str): Status message
         """
+        if correlation_id:
+            with correlation_context(correlation_id):
+                return await self._check_price_change_and_alert_impl(competitor_id, new_price, currency)
+        return await self._check_price_change_and_alert_impl(competitor_id, new_price, currency)
+
+    async def _check_price_change_and_alert_impl(
+        self,
+        competitor_id: str,
+        new_price: Decimal,
+        currency: str = "USD",
+    ) -> dict[str, Any]:
         try:
             sb = get_supabase_client()  # Use service key
 
