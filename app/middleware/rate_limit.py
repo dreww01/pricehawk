@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from app.core.config import get_settings
+from app.core.errors import ErrorCode, create_error_response
 
 
 def get_client_ip(request: Request) -> str:
@@ -44,12 +45,11 @@ status_limiter = Limiter(
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     """Custom handler for rate limit exceeded."""
-    return JSONResponse(
+    return create_error_response(
         status_code=429,
-        content={
-            "detail": "Too many requests. Please try again later.",
-            "retry_after": exc.detail
-        }
+        detail="Too many requests. Please try again later.",
+        error_code=ErrorCode.RATE_LIMIT_EXCEEDED,
+        retry_after=str(exc.detail),
     )
 
 

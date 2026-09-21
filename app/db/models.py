@@ -1,7 +1,15 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
+from app.core.errors import (
+    ErrorCode,
+    ErrorEnvelope,
+    STANDARD_ERROR_RESPONSES,
+    create_error_response,
+    map_error_to_code,
+)
 
 
 
@@ -337,6 +345,7 @@ class AlertHistoryListResponse(BaseModel):
 
 class TestEmailRequest(BaseModel):
     """Request to send a test email."""
+    __test__ = False
     email: str | None = None  # If None, use user's email
 
 
@@ -358,3 +367,200 @@ class ScrapeProgressResponse(BaseModel):
     current: str | None = None  # Current retailer being scraped
     results: list[dict] = []  # Completed results so far
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# General & Health Models
+# ---------------------------------------------------------------------------
+class HealthCheckResponse(BaseModel):
+    """Service health check response contract."""
+    status: str = Field(default="healthy", description="Service operational health status", examples=["healthy"])
+
+
+class MessageResponse(BaseModel):
+    """Standard generic message response contract."""
+    message: str = Field(..., description="Human-readable operational status message", examples=["Operation completed successfully."])
+
+
+# ---------------------------------------------------------------------------
+# Account Management Models
+# ---------------------------------------------------------------------------
+class AccountSettingsResponse(BaseModel):
+    """Current authenticated user account profile and settings."""
+    user_id: str = Field(..., description="Unique user identifier", examples=["usr_12345678-abcd-ef01-2345-6789abcdef01"])
+    email: str = Field(..., description="Registered user email address", examples=["user@example.com"])
+
+
+class ChangePasswordResponse(BaseModel):
+    """Outcome of password update operation."""
+    message: str = Field(default="Password updated successfully", description="Status message", examples=["Password updated successfully"])
+
+
+class ChangeEmailResponse(BaseModel):
+    """Outcome of email change request."""
+    message: str = Field(
+        default="Verification email sent to your new address. Please check your inbox.",
+        description="Status message",
+        examples=["Verification email sent to your new address. Please check your inbox."]
+    )
+
+
+class AccountDeletionDetails(BaseModel):
+    """Detailed audit metrics of resources purged during account deletion."""
+    model_config = {"extra": "allow"}
+
+    user_id: str = Field(..., description="Target user identifier purged", examples=["usr_12345678-abcd-ef01-2345-6789abcdef01"])
+    products_found: int = Field(default=0, description="Total products found and removed", examples=[3])
+    competitors_found: int = Field(default=0, description="Total competitor entries found and removed", examples=[5])
+    tasks_revoked: int = Field(default=0, description="Total background Celery tasks revoked", examples=[2])
+    tables_cleaned: list[str] = Field(
+        default_factory=list,
+        description="Database tables purged during cascade",
+        examples=[["price_history", "competitors", "insights", "tracking_jobs", "pending_alerts", "alert_history", "user_alert_settings", "products"]]
+    )
+
+
+class AccountDeleteResponse(BaseModel):
+    """Outcome contract for permanent account and data deletion."""
+    message: str = Field(
+        default="Account data deleted successfully. Please log out.",
+        description="Status message",
+        examples=["Account data deleted successfully. Please log out."]
+    )
+    details: AccountDeletionDetails | dict[str, Any] = Field(
+        ...,
+        description="Resource cleanup summary metrics"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Authentication & Password Reset Models
+# ---------------------------------------------------------------------------
+class SignupResponse(BaseModel):
+    """Outcome of user account registration."""
+    message: str = Field(default="Account created successfully", description="Outcome message", examples=["Account created successfully"])
+    user_id: str = Field(..., description="Unique ID assigned to created user", examples=["usr_12345678-abcd-ef01-2345-6789abcdef01"])
+    email: str = Field(..., description="Email address of registered user", examples=["user@example.com"])
+    email_confirmed: bool = Field(default=False, description="Whether email confirmation is already verified", examples=[False])
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Confirmation for password reset initiation."""
+    message: str = Field(
+        default="If an account exists with this email, a reset code has been sent.",
+        description="Status message",
+        examples=["If an account exists with this email, a reset code has been sent."]
+    )
+
+
+class VerifyResetOTPResponse(BaseModel):
+    """Outcome of password reset OTP verification."""
+    message: str = Field(default="Code verified successfully", description="Status message", examples=["Code verified successfully"])
+    reset_token: str = Field(..., description="Temporary single-use token to complete password reset", examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."])
+
+
+class ResetPasswordResponse(BaseModel):
+    """Outcome of password reset completion."""
+    message: str = Field(
+        default="Password has been reset successfully. You can now log in.",
+        description="Status message",
+        examples=["Password has been reset successfully. You can now log in."]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Alert Testing & Currency Acceptance Models
+# ---------------------------------------------------------------------------
+class TestEmailResponse(BaseModel):
+    """Outcome of alert test email dispatch."""
+    __test__ = False
+    success: bool = Field(default=True, description="Whether test email delivery succeeded", examples=[True])
+    message: str = Field(default="Test email sent successfully", description="Status message", examples=["Test email sent successfully"])
+    email: str = Field(..., description="Target email recipient", examples=["user@example.com"])
+
+
+class AcceptCurrencyResponse(BaseModel):
+    """Outcome of accepting a new detected currency for a competitor."""
+    success: bool = Field(default=True, description="Whether currency update succeeded", examples=[True])
+    message: str = Field(..., description="Status message", examples=["Now tracking prices in USD"])
+    competitor_id: str = Field(..., description="Competitor ID updated", examples=["comp_12345"])
+    new_currency: str = Field(..., description="Newly accepted ISO currency code", examples=["USD"])
+
+
+class AcceptAllCurrenciesResponse(BaseModel):
+    """Outcome of bulk accepting all pending currency updates."""
+    success: bool = Field(default=True, description="Whether bulk update succeeded", examples=[True])
+    message: str = Field(..., description="Status message", examples=["Accepted 2 currency changes"])
+    updated_count: int = Field(default=0, description="Total number of competitors updated", examples=[2])
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Overview Models
+# ---------------------------------------------------------------------------
+class DashboardStatsResponse(BaseModel):
+    """Aggregated dashboard statistics summary."""
+    products: int = Field(..., description="Total tracked product count", examples=[12])
+    competitors: int = Field(..., description="Total competitor URL count", examples=[35])
+    alerts: int = Field(..., description="Pending alerts count over past 7 days", examples=[4])
+    insights: int = Field(..., description="Total AI insights count", examples=[8])
+
+
+class DashboardActivityItem(BaseModel):
+    """Individual price change alert item for dashboard display."""
+    id: str = Field(..., description="Alert record identifier", examples=["alt_12345"])
+    type: str = Field(..., description="Alert classification type", examples=["price_drop"])
+    product_id: str | None = Field(None, description="Parent product identifier", examples=["prod_67890"])
+    product_name: str = Field(..., description="Product display name", examples=["Sony WH-1000XM5"])
+    retailer: str = Field(..., description="Retailer name or store domain", examples=["amazon.com"])
+    old_price: float | None = Field(None, description="Previous recorded price", examples=[399.99])
+    new_price: float | None = Field(None, description="Newly detected price", examples=[348.00])
+    change_percent: float | None = Field(None, description="Computed percentage price change", examples=[-13.0])
+    detected_at: str | datetime = Field(..., description="Timestamp when price change was detected", examples=["2025-01-15T12:00:00Z"])
+
+
+class DashboardActivityResponse(BaseModel):
+    """Recent price change activity feed."""
+    activity: list[DashboardActivityItem] = Field(default_factory=list, description="Recent activity items")
+
+
+class DashboardProductItem(BaseModel):
+    """Tracked product summary entry for dashboard cards."""
+    id: str = Field(..., description="Product identifier", examples=["prod_12345"])
+    product_name: str = Field(..., description="Product display name", examples=["Sony WH-1000XM5"])
+    is_active: bool = Field(..., description="Whether active scraping is enabled", examples=[True])
+    competitor_count: int = Field(..., description="Count of competitor URLs tracked", examples=[3])
+
+
+class DashboardProductsResponse(BaseModel):
+    """Recent tracked products listing for dashboard view."""
+    products: list[DashboardProductItem] = Field(default_factory=list, description="Recent products")
+
+
+class DashboardCacheMetricsResponse(BaseModel):
+    """Cache performance diagnostics and hit ratios."""
+    hits: int = Field(..., description="Total cache hits", examples=[9])
+    misses: int = Field(..., description="Total cache misses", examples=[1])
+    total_requests: int = Field(..., description="Total cache requests evaluated", examples=[10])
+    hit_rate: float = Field(..., description="Fractional hit rate (0.0 - 1.0)", examples=[0.9])
+    hit_percentage: float = Field(..., description="Percentage hit rate (0.0 - 100.0)", examples=[90.0])
+    invalidations: int = Field(default=0, description="Total cache eviction/invalidation events", examples=[0])
+    in_memory_keys: int = Field(default=0, description="Active in-memory cached entries", examples=[3])
+    backend: str = Field(default="memory", description="Active cache backend engine", examples=["memory"])
+    enabled: bool = Field(default=True, description="Whether caching layer is active", examples=[True])
+
+
+class DashboardInsightItem(BaseModel):
+    """AI insight item for dashboard overview."""
+    id: str = Field(..., description="Insight identifier", examples=["ins_12345"])
+    product_id: str = Field(..., description="Parent product identifier", examples=["prod_67890"])
+    product_name: str = Field(..., description="Parent product display name", examples=["Sony WH-1000XM5"])
+    insight_text: str = Field(..., description="Synthesized AI insight text", examples=["Competitor prices dropped 10% on weekends."])
+    insight_type: str = Field(..., description="Insight classification", examples=["pattern"])
+    generated_at: str | datetime = Field(..., description="Timestamp when insight was generated", examples=["2025-01-15T10:00:00Z"])
+
+
+class DashboardInsightsResponse(BaseModel):
+    """Cross-product AI insights listing."""
+    insights: list[DashboardInsightItem] = Field(default_factory=list, description="Recent insight summaries")
+    total: int = Field(..., description="Total insights count returned", examples=[10])
+

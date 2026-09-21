@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,8 +31,16 @@ from app.api.routes import (
     tracked_products,
 )
 from app.core.config import get_settings
+from app.core.errors import (
+    ErrorCode,
+    ErrorEnvelope,
+    STANDARD_ERROR_RESPONSES,
+    create_error_response,
+    map_error_to_code,
+)
 from app.core.security import get_safe_redirect_url, delete_access_token_cookie
 from app.core.version import APPLICATION_VERSION
+from app.db.models import HealthCheckResponse
 from app.middleware.rate_limit import (
     limiter,
     rate_limit_exceeded_handler,
@@ -87,6 +96,7 @@ app = FastAPI(
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
+    responses=STANDARD_ERROR_RESPONSES,
 )
 
 # Rate limiting
@@ -139,12 +149,11 @@ async def global_exception_handler(request: Request, exc: Exception):
         f"Unhandled error [{error_id}] {request.method} {request.url.path}: {exc}"
     )
 
-    return JSONResponse(
+    return create_error_response(
         status_code=500,
-        content={
-            "detail": "An unexpected error occurred. Please try again.",
-            "error_id": error_id
-        }
+        detail="An unexpected error occurred. Please try again.",
+        error_code=ErrorCode.INTERNAL_ERROR,
+        error_id=error_id,
     )
 
 
@@ -154,23 +163,32 @@ def root():
     return RedirectResponse(url="/dashboard")
 
 
-@app.get("/api/health")
-def health_check() -> dict:
+@app.get(
+    "/api/health",
+    response_model=HealthCheckResponse,
+    summary="Service health check",
+    description="Check whether the PriceHawk API service is healthy and operational.",
+    responses={
+        200: {"model": HealthCheckResponse, "description": "Service is healthy"},
+    },
+)
+def health_check() -> HealthCheckResponse:
     """Health check endpoint."""
-    return {"status": "healthy"}
+    return HealthCheckResponse(status="healthy")
 
 
 @app.exception_handler(401)
 async def unauthorized_handler(request: Request, exc: HTTPException):
     """
     Handle 401 errors:
-    - API routes (/api/*) always return HTTP 401 JSON responses.
+    - API routes (/api/*) always return HTTP 401 JSON responses with standardized error envelope.
     - Page routes always redirect to /login with a safe return destination and notice.
     """
     if request.url.path.startswith("/api/") or request.url.path == "/api":
-        return JSONResponse(
+        return create_error_response(
             status_code=401,
-            content={"detail": exc.detail},
+            detail=exc.detail,
+            error_code=map_error_to_code(401, exc.detail),
             headers=getattr(exc, "headers", None),
         )
 
@@ -196,7 +214,7 @@ async def forbidden_handler(request: Request, exc: HTTPException):
     """
     Handle 403 errors:
     - Non-API page routes with 'not authenticated' redirect to login with return path.
-    - All other requests (including all API routes) return HTTP 403 JSON responses.
+    - All other requests (including all API routes) return HTTP 403 JSON responses with standardized error envelope.
     """
     is_api = request.url.path.startswith("/api/") or request.url.path == "/api"
     err_detail = str(getattr(exc, "detail", "")).lower()
@@ -209,17 +227,19 @@ async def forbidden_handler(request: Request, exc: HTTPException):
             url=f"/login?next={quote(destination)}&notice=login_required",
             status_code=303,
         )
-    return JSONResponse(
+    return create_error_response(
         status_code=403,
-        content={"detail": exc.detail},
+        detail=exc.detail,
+        error_code=ErrorCode.FORBIDDEN,
         headers=getattr(exc, "headers", None),
     )
 
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc: HTTPException):
-    """Handle 404 errors with HTML page for browser requests."""
-    if "text/html" in request.headers.get("accept", ""):
+    """Handle 404 errors with HTML page for browser requests, or standardized error envelope for API."""
+    is_api = request.url.path.startswith("/api/") or request.url.path == "/api"
+    if not is_api and "text/html" in request.headers.get("accept", ""):
         return HTMLResponse(
             content="""
             <!DOCTYPE html>
@@ -244,4 +264,40 @@ async def not_found_handler(request: Request, exc: HTTPException):
             """,
             status_code=404
         )
-    return JSONResponse(status_code=404, content={"detail": exc.detail or "Not found"})
+    return create_error_response(
+        status_code=404,
+        detail=exc.detail or "Not found",
+        error_code=ErrorCode.NOT_FOUND,
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle 422 validation errors with standardized error envelope."""
+    return create_error_response(
+        status_code=422,
+        detail=exc.errors(),
+        error_code=ErrorCode.VALIDATION_ERROR,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def generic_http_exception_handler(request: Request, exc: HTTPException):
+    """
+    Handle HTTPExceptions with standardized error envelope.
+    Dispatches 401, 403, and 404 to their dedicated handlers.
+    """
+    if exc.status_code == 401:
+        return await unauthorized_handler(request, exc)
+    if exc.status_code == 403:
+        return await forbidden_handler(request, exc)
+    if exc.status_code == 404:
+        return await not_found_handler(request, exc)
+
+    return create_error_response(
+        status_code=exc.status_code,
+        detail=exc.detail,
+        error_code=getattr(exc, "error_code", None) or map_error_to_code(exc.status_code, exc.detail),
+        headers=getattr(exc, "headers", None),
+    )
