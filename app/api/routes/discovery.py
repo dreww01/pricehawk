@@ -46,6 +46,8 @@ async def discover_store_products(
             image_url=p.image_url,
             product_url=p.product_url,
             platform=p.platform,
+            platform_label=p.platform_label,
+            confidence=p.confidence,
             variant_id=p.variant_id,
             sku=p.sku,
             in_stock=p.in_stock,
@@ -55,6 +57,8 @@ async def discover_store_products(
 
     return StoreDiscoveryResponse(
         platform=result.platform,
+        platform_label=result.platform_label,
+        confidence=result.confidence,
         store_url=result.store_url,
         total_found=result.total_found,
         products=products,

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import random
 import re
@@ -236,8 +237,11 @@ PRICE_SELECTORS = {
         "[data-product-price]",
         ".price-item--regular",
         ".price-item--sale",
+        ".price__sale .price-item",
+        ".price__regular .price-item",
         ".ProductMeta__Price",
         ".product-single__price",
+        ".price-item",
     ],
     "woocommerce": [
         ".woocommerce-Price-amount bdi",
@@ -246,20 +250,33 @@ PRICE_SELECTORS = {
         ".price .amount",
         ".summary .price",
         "p.price span.amount",
+        ".entry-summary .price",
+        ".wc-block-components-product-price",
     ],
     "generic": [
         "[itemprop='price']",
+        "[itemprop='lowPrice']",
         "[data-price]",
         "[data-product-price]",
+        "[data-sale-price]",
+        "[data-regular-price]",
         "meta[property='product:price:amount']",
+        "meta[property='og:price:amount']",
         ".price",
         ".product-price",
+        ".product__price",
         ".current-price",
         ".sale-price",
         ".regular-price",
+        ".special-price",
+        ".final-price",
+        ".offer-price",
         "#product-price",
         ".price-value",
         ".amount",
+        ".money",
+        ".pdp-price",
+        ".price-item",
     ],
 }
 
@@ -338,7 +355,18 @@ def get_retailer(url: str) -> str:
 
 
 def detect_platform_from_html(html: str) -> str | None:
-    """Detect e-commerce platform from HTML content."""
+    """Detect e-commerce platform from HTML content, supporting modern headless setups and subdomains."""
+    if not html:
+        return None
+
+    try:
+        from app.services.store_detector import classify_platform_from_html
+        platform, _, confidence, _ = classify_platform_from_html(html)
+        if platform in ("shopify", "woocommerce") and confidence >= 0.70:
+            return platform
+    except Exception:
+        pass
+
     html_lower = html.lower()
     if "shopify" in html_lower or "cdn.shopify" in html_lower:
         return "shopify"
@@ -348,7 +376,7 @@ def detect_platform_from_html(html: str) -> str | None:
 
 
 def parse_price(text: str) -> tuple[Decimal | None, str]:
-    """Extract price and currency from text."""
+    """Extract price and currency from text, handling international currency symbols and decimal formats."""
     if not text:
         return None, "USD"
 
@@ -358,23 +386,31 @@ def parse_price(text: str) -> tuple[Decimal | None, str]:
     currency = "USD"
     if "₦" in text or "NGN" in text.upper():
         currency = "NGN"
-    elif "£" in text:
+    elif "£" in text or "GBP" in text.upper():
         currency = "GBP"
-    elif "€" in text:
+    elif "€" in text or "EUR" in text.upper():
         currency = "EUR"
-    elif "CAD" in text or "C$" in text:
+    elif "CAD" in text.upper() or "C$" in text:
         currency = "CAD"
+    elif "AUD" in text.upper() or "A$" in text:
+        currency = "AUD"
+    elif "¥" in text or "JPY" in text.upper():
+        currency = "JPY"
+    elif "₹" in text or "INR" in text.upper():
+        currency = "INR"
 
-    # Remove currency symbols and clean
-    cleaned = re.sub(r"[£€$₦,\s]", "", text)
+    # Remove currency symbols and surrounding whitespace (preserve digits, periods, commas)
+    cleaned = re.sub(r"[£€$¥₹₦\s]", "", text)
     cleaned = re.sub(r"[A-Za-z]", "", cleaned)
 
-    # Handle European format (1.234,56 → 1234.56)
+    # Handle thousands and decimal formats
     if "," in cleaned and "." in cleaned:
+        # Determine European (1.234,56) vs US (1,234.56)
         if cleaned.rfind(",") > cleaned.rfind("."):
             cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
     elif "," in cleaned:
-        # Could be 1,234 or 1,23 - check decimal places
         parts = cleaned.split(",")
         if len(parts[-1]) == 2:
             cleaned = cleaned.replace(",", ".")
@@ -387,8 +423,77 @@ def parse_price(text: str) -> tuple[Decimal | None, str]:
         return None, currency
 
 
+def _detect_meta_currency(soup: BeautifulSoup) -> str | None:
+    """Detect currency from metadata tags in page head."""
+    currency_selectors = [
+        "meta[property='product:price:currency']",
+        "meta[property='og:price:currency']",
+        "meta[itemprop='priceCurrency']",
+        "meta[name='twitter:data2']",
+    ]
+    for sel in currency_selectors:
+        el = soup.select_one(sel)
+        if el and el.get("content"):
+            return el.get("content").strip()
+    return None
+
+
+def _extract_price_from_json_ld(soup: BeautifulSoup) -> tuple[Decimal | None, str | None]:
+    """Extract price and currency from schema.org JSON-LD scripts with @graph and AggregateOffer support."""
+    scripts = soup.select('script[type="application/ld+json"]')
+    for script in scripts:
+        try:
+            raw_text = script.get_text(strip=True) if script else ""
+            if not raw_text:
+                continue
+            data = json.loads(raw_text)
+
+            # Flatten items including @graph
+            items = []
+            queue = [data]
+            while queue:
+                curr = queue.pop(0)
+                if isinstance(curr, list):
+                    queue.extend(curr)
+                elif isinstance(curr, dict):
+                    if "@graph" in curr and isinstance(curr["@graph"], list):
+                        queue.extend(curr["@graph"])
+                    curr_type = curr.get("@type", "")
+                    types = [curr_type.lower()] if isinstance(curr_type, str) else [str(t).lower() for t in curr_type]
+                    if any(t == "product" or t.endswith("/product") for t in types):
+                        items.append(curr)
+                    if "item" in curr and isinstance(curr["item"], dict):
+                        items.append(curr["item"])
+
+            for item in items:
+                offers = item.get("offers", {})
+                if isinstance(offers, list):
+                    offers_list = offers
+                elif isinstance(offers, dict):
+                    offers_list = [offers]
+                else:
+                    offers_list = []
+
+                for offer in offers_list:
+                    if not isinstance(offer, dict):
+                        continue
+                    price_val = offer.get("price") or offer.get("lowPrice") or offer.get("highPrice")
+                    currency = offer.get("priceCurrency", "USD")
+                    if price_val:
+                        price_dec, cur = parse_price(str(price_val))
+                        if price_dec and price_dec > 0:
+                            return price_dec, currency or cur
+        except Exception:
+            continue
+
+    return None, None
+
+
 def extract_price_from_html(html: str, retailer: str) -> tuple[Decimal | None, str]:
-    """Extract price using BeautifulSoup with retailer-specific selectors."""
+    """
+    Extract price using BeautifulSoup with retailer-specific selectors,
+    platform-detected selectors, and robust generalized web heuristics fallback.
+    """
     soup = BeautifulSoup(html, "lxml")
 
     # Build selector priority: retailer-specific → platform-detected → generic
@@ -404,7 +509,7 @@ def extract_price_from_html(html: str, retailer: str) -> tuple[Decimal | None, s
         if detected_platform and detected_platform in PRICE_SELECTORS:
             selector_groups.append(PRICE_SELECTORS[detected_platform])
 
-    # 3. Always add generic selectors as final fallback
+    # 3. Always add generic selectors as fallback
     selector_groups.append(PRICE_SELECTORS["generic"])
 
     # Try each selector group
@@ -419,16 +524,116 @@ def extract_price_from_html(html: str, retailer: str) -> tuple[Decimal | None, s
                         if content:
                             price, currency = parse_price(str(content))
                             if price and price > 0:
+                                meta_cur = _detect_meta_currency(soup)
+                                if meta_cur and (currency == "USD" or not currency):
+                                    currency = meta_cur
                                 return price, currency
                 else:
                     elements = soup.select(selector)
                     for el in elements:
+                        # Check content attribute first (schema / microdata)
+                        content = el.get("content") or el.get("data-price") or el.get("value")
+                        if content:
+                            price, currency = parse_price(str(content))
+                            if price and price > 0:
+                                meta_cur = _detect_meta_currency(soup)
+                                if meta_cur and (currency == "USD" or not currency):
+                                    currency = meta_cur
+                                return price, currency
+
                         text = el.get_text(strip=True)
                         price, currency = parse_price(text)
                         if price and price > 0:
+                            if currency == "USD":
+                                meta_cur = _detect_meta_currency(soup)
+                                if meta_cur:
+                                    currency = meta_cur
                             return price, currency
             except Exception:
                 continue
+
+    # -------------------------------------------------------------------------
+    # 4. Generalized Web Heuristics Fallback Mode
+    # -------------------------------------------------------------------------
+    # 4a. Schema.org JSON-LD Structured Data
+    try:
+        json_ld_price, json_ld_currency = _extract_price_from_json_ld(soup)
+        if json_ld_price and json_ld_price > 0:
+            return json_ld_price, json_ld_currency or "USD"
+    except Exception:
+        pass
+
+    # 4b. OpenGraph & Meta Heuristics
+    meta_price_tags = [
+        ("meta[property='product:price:amount']", "meta[property='product:price:currency']"),
+        ("meta[property='og:price:amount']", "meta[property='og:price:currency']"),
+        ("meta[property='product:sale_price:amount']", "meta[property='product:price:currency']"),
+        ("meta[itemprop='price']", "meta[itemprop='priceCurrency']"),
+        ("meta[itemprop='lowPrice']", "meta[itemprop='priceCurrency']"),
+        ("meta[name='twitter:data1']", None),
+    ]
+    for p_tag, c_tag in meta_price_tags:
+        try:
+            p_el = soup.select_one(p_tag)
+            if p_el:
+                content = p_el.get("content") or p_el.get("value") or p_el.get_text(strip=True)
+                if content:
+                    price, cur = parse_price(str(content))
+                    if price and price > 0:
+                        if c_tag:
+                            c_el = soup.select_one(c_tag)
+                            if c_el and c_el.get("content"):
+                                cur = c_el.get("content")
+                        return price, cur
+        except Exception:
+            continue
+
+    # 4c. Data-attribute Heuristics
+    data_attr_selectors = [
+        "[data-price]",
+        "[data-product-price]",
+        "[data-sale-price]",
+        "[data-regular-price]",
+        "[data-price-amount]",
+        "[data-amount]",
+        "[data-clean-price]",
+    ]
+    for sel in data_attr_selectors:
+        try:
+            for el in soup.select(sel):
+                attr_val = (
+                    el.get("data-price")
+                    or el.get("data-product-price")
+                    or el.get("data-sale-price")
+                    or el.get("data-regular-price")
+                    or el.get("data-price-amount")
+                    or el.get("data-amount")
+                    or el.get("data-clean-price")
+                )
+                if attr_val:
+                    price, cur = parse_price(str(attr_val))
+                    if price and price > 0:
+                        return price, cur
+        except Exception:
+            continue
+
+    # 4d. Fallback Regex Heuristic on Price Containers
+    try:
+        price_containers = soup.select("[class*='price'], [id*='price'], [class*='pdp'], [data-testid*='price']")
+        for container in price_containers:
+            # Skip hidden elements or scripts
+            if container.name in ("script", "style", "noscript"):
+                continue
+            text = container.get_text(separator=" ", strip=True)
+            # Find price patterns e.g. $49.99, £12.50, €99,00, ₦25,000
+            matches = re.findall(r"([$£€¥₹₦]|CAD|USD|EUR|GBP|AUD)\s*(\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?|\d+(?:,\d{2}))", text, re.IGNORECASE)
+            if matches:
+                full_text = f"{matches[0][0]}{matches[0][1]}"
+                price, cur = parse_price(full_text)
+                if price and price > 0:
+                    return price, cur
+    except Exception:
+        pass
 
     return None, "USD"
 
