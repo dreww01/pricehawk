@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     from_email: str | None = None
     from_name: str = "PriceHawk Alerts"
 
+    # Flash Notifications
+    flash_secret_key: str | None = None
+    flash_cookie_name: str = "flash_messages"
+    flash_cookie_max_age: int = 300
+
     @property
     def celery_broker_url(self) -> str:
         return self.redis_url

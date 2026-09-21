@@ -38,6 +38,7 @@ from app.core.errors import (
     create_error_response,
     map_error_to_code,
 )
+from app.core.flash import flash, FlashMiddleware
 from app.core.security import get_safe_redirect_url, delete_access_token_cookie
 from app.core.version import APPLICATION_VERSION
 from app.db.models import HealthCheckResponse
@@ -111,6 +112,9 @@ templates = Jinja2Templates(directory=BASE_DIR / "app" / "templates")
 
 # Security headers
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Flash notifications
+app.add_middleware(FlashMiddleware)
 
 # CORS
 app.add_middleware(
@@ -206,6 +210,11 @@ async def unauthorized_handler(request: Request, exc: HTTPException):
     )
     if is_expired:
         delete_access_token_cookie(response)
+    flash(
+        response,
+        "Your session has expired. Please log in again." if is_expired else "Please log in to access this page.",
+        "warning" if is_expired else "info",
+    )
     return response
 
 
@@ -223,10 +232,12 @@ async def forbidden_handler(request: Request, exc: HTTPException):
         if request.url.query:
             raw_destination = f"{request.url.path}?{request.url.query}"
         destination = get_safe_redirect_url(raw_destination, default="/dashboard")
-        return RedirectResponse(
+        response = RedirectResponse(
             url=f"/login?next={quote(destination)}&notice=login_required",
             status_code=303,
         )
+        flash(response, "Please log in to access this page.", "info")
+        return response
     return create_error_response(
         status_code=403,
         detail=exc.detail,

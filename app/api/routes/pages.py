@@ -14,6 +14,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.core.flash import (
+    flash,
+    pop_flashes,
+    clear_flash_cookie,
+    FlashMessage,
+)
 from app.core.security import (
     verify_token_string,
     CurrentUser,
@@ -84,6 +90,7 @@ async def require_auth(
 
     token = extract_token(request, credentials)
     if not token:
+        flash(request, "Please log in to access this page.", "info")
         redirect_url = f"/login?next={quote(destination)}"
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER,
@@ -100,6 +107,7 @@ async def require_auth(
         is_expired = "expired" in err_msg
         notice = "session_expired" if is_expired else "session_expired"
         redirect_url = f"/login?next={quote(destination)}&notice={notice}"
+        flash(request, "Your session has expired. Please log in again.", "warning")
         headers = {
             "Location": redirect_url,
             "Set-Cookie": get_delete_cookie_header(),
@@ -117,27 +125,40 @@ def template_response(
     user: Optional[CurrentUser] = None
 ) -> HTMLResponse:
     """Helper to render templates with common context."""
-    flash_messages = []
+    flash_messages: list[FlashMessage] = []
+
+    # 1. Retrieve any cryptographically signed flash messages from cookies
+    cookie_flashes = pop_flashes(request)
+    for cf in cookie_flashes:
+        flash_messages.append(FlashMessage(text=cf.get("text", ""), category=cf.get("type", "info")))
+
+    # 2. Support URL query param notices with deduplication against signed flashes
     notice = request.query_params.get("notice")
     message = request.query_params.get("message")
     raw_next = (context.get("next") if context and "next" in context else request.query_params.get("next"))
     safe_next = get_safe_redirect_url(raw_next, default=None)
 
     if notice == "session_expired" or request.query_params.get("expired"):
-        flash_messages.append({
-            "type": "warning",
-            "text": "Your session has expired. Please log in again."
-        })
+        exp_text = "Your session has expired. Please log in again."
+        if not any(m.text == exp_text for m in flash_messages):
+            flash_messages.append(FlashMessage(text=exp_text, category="warning"))
     elif notice == "login_required" or (safe_next and not notice and template_name == "auth/login.html"):
-        flash_messages.append({
-            "type": "info",
-            "text": "Please log in to access this page."
-        })
+        req_text = "Please log in to access this page."
+        if not any(m.text == req_text for m in flash_messages):
+            flash_messages.append(FlashMessage(text=req_text, category="info"))
     elif message:
-        flash_messages.append({
-            "type": "info",
-            "text": message
-        })
+        if not any(m.text == message for m in flash_messages):
+            flash_messages.append(FlashMessage(text=message, category="info"))
+
+    # 3. Incorporate any explicit flash messages passed in context
+    if context and "flash_messages" in context:
+        for m in context["flash_messages"]:
+            if isinstance(m, dict):
+                fm = FlashMessage(text=m.get("text", m.get("message", "")), category=m.get("type", m.get("category", "info")))
+            else:
+                fm = m
+            if not any(existing.text == fm.text for existing in flash_messages):
+                flash_messages.append(fm)
 
     ctx = {
         "request": request,
@@ -147,11 +168,17 @@ def template_response(
     }
     if context:
         ctx.update(context)
+    ctx["flash_messages"] = flash_messages
+
     response = templates.TemplateResponse(
         request=request,
         name=template_name,
         context=ctx,
     )
+
+    # Clear the flash cookie on page render so it displays exactly once
+    clear_flash_cookie(response)
+
     auth_token = getattr(getattr(request, "state", None), "auth_token", None)
     if auth_token and not request.cookies.get("access_token"):
         set_access_token_cookie(response, auth_token)
@@ -235,6 +262,7 @@ async def login_post(
         target = safe_next or "/dashboard"
         response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
         set_access_token_cookie(response, auth_resp.session.access_token)
+        flash(response, "Welcome back! Successfully logged in.", "success")
         return response
 
     except Exception as e:
@@ -378,6 +406,16 @@ async def logout():
     """Logout and clear session cookie."""
     response = RedirectResponse(url="/login", status_code=303)
     delete_access_token_cookie(response)
+    flash(response, "You have been logged out successfully.", "info")
+    return response
+
+
+@router.get("/api/dismiss-flash", response_class=HTMLResponse)
+@router.post("/api/dismiss-flash", response_class=HTMLResponse)
+async def dismiss_flash(request: Request):
+    """HTMX endpoint to dismiss a flash message and clear any remaining flash cookie."""
+    response = HTMLResponse(content="", status_code=status.HTTP_200_OK)
+    clear_flash_cookie(response)
     return response
 
 

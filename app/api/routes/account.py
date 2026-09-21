@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr
 
+from app.core.flash import flash
 from app.core.security import get_current_user, CurrentUser, delete_access_token_cookie
 from app.db.database import get_supabase_client, get_supabase_client_with_session
 from app.db.models import (
@@ -52,6 +53,7 @@ class VerifyEmailChangeRequest(BaseModel):
 )
 async def change_password(
     request: ChangePasswordRequest,
+    response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> ChangePasswordResponse:
@@ -64,7 +66,7 @@ async def change_password(
 
     try:
         client.auth.update_user({"password": request.new_password})
-
+        flash(response, "Password updated successfully.", "success")
         return ChangePasswordResponse(message="Password updated successfully")
 
     except Exception as e:
@@ -94,6 +96,7 @@ async def change_password(
 )
 async def change_email(
     request: ChangeEmailRequest,
+    response: Response,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     current_user: CurrentUser = Depends(get_current_user)
 ) -> ChangeEmailResponse:
@@ -106,7 +109,7 @@ async def change_email(
 
     try:
         client.auth.update_user({"email": request.new_email})
-
+        flash(response, "Verification email sent to your new address. Please check your inbox.", "info")
         return ChangeEmailResponse(
             message="Verification email sent to your new address. Please check your inbox."
         )
