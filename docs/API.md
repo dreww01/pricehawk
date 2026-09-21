@@ -24,18 +24,48 @@ Authorization: Bearer <access_token>
 
 ## Error Model
 
-FastAPI and route handlers return JSON error payloads.
+FastAPI and route handlers return standardized JSON error envelopes across all endpoints.
 
-| Status | Meaning | Typical body |
+```json
+{
+  "detail": "Product not found",
+  "error_code": "NOT_FOUND",
+  "message": "Product not found",
+  "error_id": null,
+  "retry_after": null
+}
+```
+
+- `detail`: Detailed error description or FastAPI validation error list for backward compatibility.
+- `error_code`: Strictly typed string enum code (`ErrorCode`) for machine-readable client error branching.
+- `message`: Clean, human-readable summary message.
+- `error_id`: (Optional) Unique UUID trace identifier for 500 internal server errors.
+- `retry_after`: (Optional) Seconds remaining before retry when encountering 429 rate limits.
+
+### Standard Error Codes (`ErrorCode`)
+
+| Error Code | HTTP Status | Description |
 | --- | --- | --- |
-| `400` | Invalid request or rejected domain operation | `{"detail":"No fields to update"}` |
-| `401` | Missing, expired, or invalid authentication | `{"detail":"Not authenticated"}` |
-| `403` | Authenticated but not authorized for the resource/action | `{"detail":"Not authorized to modify this competitor"}` |
-| `404` | Resource not found or intentionally hidden by ownership checks | `{"detail":"Product not found"}` |
-| `429` | slowapi or upstream auth reset throttling | `{"detail":"Rate limit exceeded"}` |
-| `500` | Unexpected service failure | `{"detail":"An unexpected error occurred. Please try again.","error_id":"..."}` |
+| `VALIDATION_ERROR` | `422` | Request body, query parameter, or header validation failure |
+| `NOT_AUTHENTICATED` | `401` | Missing or invalid authentication token |
+| `SESSION_EXPIRED` | `401` | Expired authentication session token |
+| `FORBIDDEN` | `403` | Access denied or cross-tenant modification attempt |
+| `BAD_REQUEST` | `400` | Malformed request, weak password, or illegal state operation |
+| `NOT_FOUND` | `404` | Requested resource was not found |
+| `CONFLICT` | `400`/`409` | Resource duplicate or conflicting entity (e.g. email already registered) |
+| `RATE_LIMIT_EXCEEDED` | `429` | slowapi endpoint throttling limit exceeded |
+| `INTERNAL_ERROR` | `500` | Unhandled internal server failure |
+| `SERVICE_UNAVAILABLE` | `503` | Downstream dependent service unavailable |
 
-Validation errors use FastAPI's standard `422 Unprocessable Entity` response.
+| Status | Meaning | Typical envelope |
+| --- | --- | --- |
+| `400` | Invalid request or rejected domain operation | `{"detail":"No fields to update","error_code":"BAD_REQUEST","message":"No fields to update"}` |
+| `401` | Missing, expired, or invalid authentication | `{"detail":"Not authenticated","error_code":"NOT_AUTHENTICATED","message":"Not authenticated"}` |
+| `403` | Authenticated but not authorized for the resource/action | `{"detail":"Not authorized to modify this competitor","error_code":"FORBIDDEN","message":"Not authorized to modify this competitor"}` |
+| `404` | Resource not found or intentionally hidden by ownership checks | `{"detail":"Product not found","error_code":"NOT_FOUND","message":"Product not found"}` |
+| `422` | Request validation error | `{"detail":[...],"error_code":"VALIDATION_ERROR","message":"Validation failed: ..."}` |
+| `429` | slowapi or upstream auth reset throttling | `{"detail":"Too many requests...","error_code":"RATE_LIMIT_EXCEEDED","message":"Too many requests...","retry_after":"60"}` |
+| `500` | Unexpected service failure | `{"detail":"An unexpected error occurred. Please try again.","error_code":"INTERNAL_ERROR","message":"An unexpected error occurred. Please try again.","error_id":"8a2f1b4c"}` |
 
 ## Endpoints
 

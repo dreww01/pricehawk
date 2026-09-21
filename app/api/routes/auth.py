@@ -10,6 +10,13 @@ from pydantic import BaseModel, EmailStr
 from app.core.config import get_settings
 from app.core.security import get_current_user, CurrentUser, set_access_token_cookie
 from app.db.database import get_supabase_client
+from app.db.models import (
+    ErrorEnvelope,
+    ForgotPasswordResponse,
+    ResetPasswordResponse,
+    SignupResponse,
+    VerifyResetOTPResponse,
+)
 from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
 
 logger = logging.getLogger(__name__)
@@ -33,7 +40,19 @@ class AuthResponse(BaseModel):
     email: str
 
 
-@router.post("/login", response_model=AuthResponse)
+@router.post(
+    "/login",
+    response_model=AuthResponse,
+    summary="User login",
+    description="Login with email and password to receive an access token.",
+    responses={
+        200: {"model": AuthResponse, "description": "Successful login"},
+        400: {"model": ErrorEnvelope, "description": "Bad request"},
+        401: {"model": ErrorEnvelope, "description": "Invalid email or password"},
+        422: {"model": ErrorEnvelope, "description": "Validation error"},
+        429: {"model": ErrorEnvelope, "description": "Rate limit exceeded"},
+    },
+)
 @limiter.limit(AUTH_RATE_LIMIT)
 async def login(request: Request, login_data: LoginRequest, http_response: Response):
     """Login with email and password."""
@@ -73,9 +92,20 @@ async def login(request: Request, login_data: LoginRequest, http_response: Respo
         )
 
 
-@router.post("/signup", response_model=dict)
+@router.post(
+    "/signup",
+    response_model=SignupResponse,
+    summary="User registration",
+    description="Create a new user account with email and password.",
+    responses={
+        200: {"model": SignupResponse, "description": "Account created successfully"},
+        400: {"model": ErrorEnvelope, "description": "Unable to create account or email already registered"},
+        422: {"model": ErrorEnvelope, "description": "Validation error"},
+        429: {"model": ErrorEnvelope, "description": "Rate limit exceeded"},
+    },
+)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def signup(request: Request, signup_data: SignupRequest):
+async def signup(request: Request, signup_data: SignupRequest) -> SignupResponse:
     """Create a new account."""
     client = get_supabase_client()
 
@@ -86,12 +116,12 @@ async def signup(request: Request, signup_data: SignupRequest):
         })
 
         if response.user:
-            return {
-                "message": "Account created successfully",
-                "user_id": response.user.id,
-                "email": response.user.email,
-                "email_confirmed": response.user.email_confirmed_at is not None
-            }
+            return SignupResponse(
+                message="Account created successfully",
+                user_id=response.user.id,
+                email=response.user.email,
+                email_confirmed=response.user.email_confirmed_at is not None
+            )
 
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -132,9 +162,19 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
-@router.post("/forgot-password")
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    summary="Request password reset",
+    description="Send password reset OTP code to email. User will receive a 6-digit code to verify identity.",
+    responses={
+        200: {"model": ForgotPasswordResponse, "description": "Reset instructions sent if account exists"},
+        422: {"model": ErrorEnvelope, "description": "Invalid email format"},
+        429: {"model": ErrorEnvelope, "description": "Rate limit exceeded"},
+    },
+)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def forgot_password(request: Request, forgot_data: ForgotPasswordRequest):
+async def forgot_password(request: Request, forgot_data: ForgotPasswordRequest) -> ForgotPasswordResponse:
     """
     Send password reset OTP code to email.
     User will receive a 6-digit code to verify identity.
@@ -145,9 +185,9 @@ async def forgot_password(request: Request, forgot_data: ForgotPasswordRequest):
     try:
         client.auth.reset_password_email(forgot_data.email)
 
-        return {
-            "message": "If an account exists with this email, a reset code has been sent."
-        }
+        return ForgotPasswordResponse(
+            message="If an account exists with this email, a reset code has been sent."
+        )
 
     except Exception as e:
         error_msg = str(e)
@@ -162,14 +202,25 @@ async def forgot_password(request: Request, forgot_data: ForgotPasswordRequest):
             )
 
         logger.exception(f"Forgot password error for {forgot_data.email}: {e}")
-        return {
-            "message": "If an account exists with this email, a reset code has been sent."
-        }
+        return ForgotPasswordResponse(
+            message="If an account exists with this email, a reset code has been sent."
+        )
 
 
-@router.post("/verify-reset-otp")
+@router.post(
+    "/verify-reset-otp",
+    response_model=VerifyResetOTPResponse,
+    summary="Verify reset OTP code",
+    description="Verify OTP code and return a temporary reset token. Step 2 of password reset flow.",
+    responses={
+        200: {"model": VerifyResetOTPResponse, "description": "OTP verified successfully"},
+        400: {"model": ErrorEnvelope, "description": "Invalid or expired OTP code"},
+        422: {"model": ErrorEnvelope, "description": "Validation error"},
+        429: {"model": ErrorEnvelope, "description": "Rate limit exceeded"},
+    },
+)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def verify_reset_otp(request: Request, reset_data: VerifyResetOTPRequest):
+async def verify_reset_otp(request: Request, reset_data: VerifyResetOTPRequest) -> VerifyResetOTPResponse:
     """
     Verify OTP code and return a temporary reset token.
     Step 2 of password reset flow - validates identity before allowing password change.
@@ -190,10 +241,10 @@ async def verify_reset_otp(request: Request, reset_data: VerifyResetOTPRequest):
             )
 
         # Return the access token as reset_token for the next step
-        return {
-            "message": "Code verified successfully",
-            "reset_token": response.session.access_token
-        }
+        return VerifyResetOTPResponse(
+            message="Code verified successfully",
+            reset_token=response.session.access_token
+        )
 
     except HTTPException:
         raise
@@ -211,9 +262,20 @@ async def verify_reset_otp(request: Request, reset_data: VerifyResetOTPRequest):
         )
 
 
-@router.post("/reset-password")
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    summary="Reset password with token",
+    description="Reset password using the token from OTP verification. Step 3 of password reset flow.",
+    responses={
+        200: {"model": ResetPasswordResponse, "description": "Password reset completed successfully"},
+        400: {"model": ErrorEnvelope, "description": "Password requirements not met or token expired"},
+        422: {"model": ErrorEnvelope, "description": "Validation error"},
+        429: {"model": ErrorEnvelope, "description": "Rate limit exceeded"},
+    },
+)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def reset_password(request: Request, reset_data: ResetPasswordRequest):
+async def reset_password(request: Request, reset_data: ResetPasswordRequest) -> ResetPasswordResponse:
     """
     Reset password using the token from OTP verification.
     Step 3 of password reset flow - only accessible after OTP verified.
@@ -225,7 +287,7 @@ async def reset_password(request: Request, reset_data: ResetPasswordRequest):
         client = get_supabase_client_with_session(reset_data.reset_token)
         client.auth.update_user({"password": reset_data.new_password})
 
-        return {"message": "Password has been reset successfully. You can now log in."}
+        return ResetPasswordResponse(message="Password has been reset successfully. You can now log in.")
 
     except Exception as e:
         error_msg = str(e).lower()

@@ -12,15 +12,19 @@ from supabase import Client
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_user_supabase_client, get_supabase_client
 from app.db.models import (
-    AlertSettingsResponse,
-    AlertSettingsUpdate,
-    PendingAlertsListResponse,
-    PendingAlertResponse,
+    AcceptAllCurrenciesResponse,
+    AcceptCurrencyResponse,
     AlertHistoryListResponse,
     AlertHistoryResponse,
+    AlertSettingsResponse,
+    AlertSettingsUpdate,
     DigestRunRequest,
     DigestRunResponse,
-    TestEmailRequest
+    ErrorEnvelope,
+    PendingAlertResponse,
+    PendingAlertsListResponse,
+    TestEmailRequest,
+    TestEmailResponse,
 )
 from app.services.email_service import EmailService
 from app.services.digest_service import DigestService
@@ -348,11 +352,22 @@ async def run_alert_digest(
         ) from exc
 
 
-@router.post("/test")
+@router.post(
+    "/test",
+    response_model=TestEmailResponse,
+    summary="Send test email",
+    description="Send a test email to verify email configuration. If email is not provided, sends to user's registered email.",
+    responses={
+        200: {"model": TestEmailResponse, "description": "Test email sent successfully"},
+        400: {"model": ErrorEnvelope, "description": "No email address available"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+        500: {"model": ErrorEnvelope, "description": "Failed to send test email"},
+    },
+)
 async def send_test_email(
     request: TestEmailRequest | None = None,
     current_user: CurrentUser = Depends(get_current_user)
-):
+) -> TestEmailResponse:
     """
     Send a test email to verify email configuration.
 
@@ -376,11 +391,11 @@ async def send_test_email(
         logger.info(f"Email result: {result}")
 
         if result["success"]:
-            return {
-                "success": True,
-                "message": "Test email sent successfully",
-                "email": target_email
-            }
+            return TestEmailResponse(
+                success=True,
+                message="Test email sent successfully",
+                email=target_email
+            )
         else:
             logger.error(f"Failed to send test email to {target_email}: {result.get('error')}")
             raise HTTPException(
@@ -398,13 +413,25 @@ async def send_test_email(
         )
 
 
-@router.patch("/competitors/{competitor_id}/accept-currency")
+@router.patch(
+    "/competitors/{competitor_id}/accept-currency",
+    response_model=AcceptCurrencyResponse,
+    summary="Accept currency change",
+    description="Accept a new currency for a competitor after currency change detection.",
+    responses={
+        200: {"model": AcceptCurrencyResponse, "description": "Currency accepted and alerts dismissed"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+        403: {"model": ErrorEnvelope, "description": "Not authorized to modify this competitor"},
+        404: {"model": ErrorEnvelope, "description": "Competitor not found"},
+        500: {"model": ErrorEnvelope, "description": "Unable to update currency"},
+    },
+)
 async def accept_currency(
     competitor_id: str,
     request: AcceptCurrencyRequest,
     sb: Client = Depends(get_user_supabase_client),
     current_user: CurrentUser = Depends(get_current_user)
-):
+) -> AcceptCurrencyResponse:
     """
     Accept a new currency for a competitor after currency change detection.
 
@@ -449,12 +476,12 @@ async def accept_currency(
         finally:
             invalidate_dashboard_cache(current_user.id)
 
-        return {
-            "success": True,
-            "message": f"Now tracking prices in {request.currency}",
-            "competitor_id": competitor_id,
-            "new_currency": request.currency
-        }
+        return AcceptCurrencyResponse(
+            success=True,
+            message=f"Now tracking prices in {request.currency}",
+            competitor_id=competitor_id,
+            new_currency=request.currency
+        )
 
     except HTTPException:
         raise
@@ -466,11 +493,21 @@ async def accept_currency(
         )
 
 
-@router.post("/accept-all-currencies")
+@router.post(
+    "/accept-all-currencies",
+    response_model=AcceptAllCurrenciesResponse,
+    summary="Accept all pending currency changes",
+    description="Bulk operation to update all competitors with currency_changed alerts to their new detected currencies.",
+    responses={
+        200: {"model": AcceptAllCurrenciesResponse, "description": "Accepted all pending currency changes"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+        500: {"model": ErrorEnvelope, "description": "Unable to accept currency changes"},
+    },
+)
 async def accept_all_currencies(
     sb: Client = Depends(get_user_supabase_client),
     current_user: CurrentUser = Depends(get_current_user)
-):
+) -> AcceptAllCurrenciesResponse:
     """
     Accept all pending currency changes for the current user.
 
@@ -489,11 +526,11 @@ async def accept_all_currencies(
         )
 
         if not alerts_response.data:
-            return {
-                "success": True,
-                "message": "No pending currency changes",
-                "updated_count": 0
-            }
+            return AcceptAllCurrenciesResponse(
+                success=True,
+                message="No pending currency changes",
+                updated_count=0
+            )
 
         service_sb = get_supabase_client()
         updated_count = 0
@@ -519,11 +556,11 @@ async def accept_all_currencies(
             if updated_count > 0:
                 invalidate_dashboard_cache(current_user.id)
 
-        return {
-            "success": True,
-            "message": f"Accepted {updated_count} currency changes",
-            "updated_count": updated_count
-        }
+        return AcceptAllCurrenciesResponse(
+            success=True,
+            message=f"Accepted {updated_count} currency changes",
+            updated_count=updated_count
+        )
 
     except Exception as e:
         logger.exception(f"Failed to accept all currencies for user {current_user.id}: {e}")

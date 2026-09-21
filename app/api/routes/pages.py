@@ -26,6 +26,14 @@ from app.core.security import (
     get_delete_cookie_header,
 )
 from app.db.database import get_supabase_client
+from app.db.models import (
+    DashboardActivityResponse,
+    DashboardCacheMetricsResponse,
+    DashboardInsightsResponse,
+    DashboardProductsResponse,
+    DashboardStatsResponse,
+    ErrorEnvelope,
+)
 from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
 from app.services.dashboard_cache import get_dashboard_cache
 
@@ -377,7 +385,16 @@ async def logout():
 # Dashboard API Endpoints
 # ============================================================================
 
-@router.get("/api/dashboard/stats")
+@router.get(
+    "/api/dashboard/stats",
+    response_model=DashboardStatsResponse,
+    summary="Get dashboard statistics",
+    description="Get aggregated dashboard statistics including product, competitor, alert, and insight counts.",
+    responses={
+        200: {"model": DashboardStatsResponse, "description": "Aggregated dashboard statistics"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+    },
+)
 async def get_dashboard_stats(
     auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
@@ -457,7 +474,16 @@ async def get_dashboard_stats(
     )
 
 
-@router.get("/api/dashboard/activity")
+@router.get(
+    "/api/dashboard/activity",
+    response_model=DashboardActivityResponse,
+    summary="Get recent dashboard activity",
+    description="Get recent price change activity feed for the dashboard view.",
+    responses={
+        200: {"model": DashboardActivityResponse, "description": "Recent activity feed"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+    },
+)
 async def get_dashboard_activity(
     auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
@@ -520,7 +546,16 @@ async def get_dashboard_activity(
     )
 
 
-@router.get("/api/dashboard/products")
+@router.get(
+    "/api/dashboard/products",
+    response_model=DashboardProductsResponse,
+    summary="Get recent dashboard products",
+    description="Get the most recent products with competitor counts for dashboard display.",
+    responses={
+        200: {"model": DashboardProductsResponse, "description": "Recent products list"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+    },
+)
 async def get_dashboard_products(
     auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
@@ -583,7 +618,16 @@ async def get_dashboard_products(
     )
 
 
-@router.get("/api/dashboard/cache/metrics")
+@router.get(
+    "/api/dashboard/cache/metrics",
+    response_model=DashboardCacheMetricsResponse,
+    summary="Get dashboard cache metrics",
+    description="Get dashboard cache performance metrics including hit rates, hits, misses, and invalidations.",
+    responses={
+        200: {"model": DashboardCacheMetricsResponse, "description": "Cache diagnostics metrics"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+    },
+)
 async def get_dashboard_cache_metrics(
     auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
@@ -594,7 +638,16 @@ async def get_dashboard_cache_metrics(
     return JSONResponse(cache.get_metrics())
 
 
-@router.get("/api/insights")
+@router.get(
+    "/api/insights",
+    response_model=DashboardInsightsResponse,
+    summary="Get all user insights",
+    description="Get all AI insights for the current user across all products.",
+    responses={
+        200: {"model": DashboardInsightsResponse, "description": "User AI insights list"},
+        401: {"model": ErrorEnvelope, "description": "Unauthorized / Session Expired"},
+    },
+)
 async def get_all_insights(
     auth: tuple[CurrentUser, str] = Depends(get_unified_user_and_token),
 ):
