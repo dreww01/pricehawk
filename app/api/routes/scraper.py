@@ -7,6 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.core.security import get_current_user, CurrentUser
+from app.core.logging import get_correlation_id, generate_correlation_id
 from app.db.database import get_supabase_client
 from app.middleware.rate_limit import limiter, SCRAPE_RATE_LIMIT
 from app.db.models import (
@@ -70,8 +71,16 @@ async def manual_scrape(
     if not competitors_result.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No competitors found")
 
-    # Dispatch to Celery (non-blocking)
-    task = scrape_product_manual.delay(product_id)
+    # Dispatch to Celery (non-blocking) with propagated correlation ID
+    cid = (
+        get_correlation_id()
+        or getattr(getattr(request, "state", None), "correlation_id", None)
+        or generate_correlation_id()
+    )
+    task = scrape_product_manual.apply_async(
+        args=[product_id],
+        headers={"correlation_id": cid},
+    )
 
     # Register active task for revocation guarantees upon account or product deletion
     try:
@@ -83,7 +92,8 @@ async def manual_scrape(
     return ScrapeTaskResponse(
         task_id=task.id,
         status="queued",
-        message=f"Scraping {competitors_result.count} competitors"
+        message=f"Scraping {competitors_result.count} competitors",
+        correlation_id=cid,
     )
 
 

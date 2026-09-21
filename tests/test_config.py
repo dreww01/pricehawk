@@ -93,3 +93,18 @@ def test_dashboard_cache_settings() -> None:
     assert custom_settings.dashboard_cache_activity_ttl == 45
     assert custom_settings.dashboard_cache_products_ttl == 60
     assert custom_settings.dashboard_cache_enabled is False
+
+
+def test_log_format_settings() -> None:
+    settings = build_settings()
+    assert settings.log_format == "auto"
+
+    json_settings = build_settings(log_format="json")
+    assert json_settings.log_format == "json"
+
+    text_settings = build_settings(log_format="TEXT")
+    assert text_settings.log_format == "text"
+
+    empty_settings = build_settings(log_format="")
+    assert empty_settings.log_format == "auto"
+

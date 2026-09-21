@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from app.core.logging import correlation_context, get_correlation_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -906,6 +908,7 @@ async def scrape_url(
     base_delay: float | None = None,
     crawl_delay: bool | None = None,
     client: httpx.AsyncClient | None = None,
+    correlation_id: str | None = None,
 ) -> ScrapeResult:
     """
     Scrape price from URL with automatic exponential backoff retries and structured error reporting.
@@ -916,6 +919,31 @@ async def scrape_url(
     4. If no price and site didn't definitively fail (e.g. 404, timeout), try Playwright
     5. Return clear, user-friendly failure statuses (timeout, blocked, layout_changed, etc.)
     """
+    if correlation_id:
+        with correlation_context(correlation_id):
+            return await _scrape_url_impl(
+                url=url,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                crawl_delay=crawl_delay,
+                client=client,
+            )
+    return await _scrape_url_impl(
+        url=url,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        crawl_delay=crawl_delay,
+        client=client,
+    )
+
+
+async def _scrape_url_impl(
+    url: str,
+    max_retries: int | None = None,
+    base_delay: float | None = None,
+    crawl_delay: bool | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> ScrapeResult:
     # Normalize URL (add https:// if missing)
     normalized_url, norm_error = normalize_url(url)
     if norm_error:
@@ -1070,7 +1098,10 @@ async def scrape_url(
     )
 
 
-async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
+async def scrape_and_check_alerts(
+    competitor_id: str,
+    correlation_id: str | None = None,
+) -> dict[str, Any]:
     """
     Scrape a competitor URL, store the price, and check for alert triggers.
 
@@ -1079,15 +1110,24 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
 
     Args:
         competitor_id: UUID of competitor to scrape
+        correlation_id: Optional correlation ID for tracing
 
     Returns:
-        dict with keys: scrape_result, alert_result
+        dict with keys: scrape_result, alert_result, correlation_id
     """
+    if correlation_id:
+        with correlation_context(correlation_id):
+            return await _scrape_and_check_alerts_impl(competitor_id)
+    return await _scrape_and_check_alerts_impl(competitor_id)
+
+
+async def _scrape_and_check_alerts_impl(competitor_id: str) -> dict[str, Any]:
     from app.db.database import get_supabase_client
     from app.services.alert_service import AlertService
     from app.services.account_service import is_product_deleted, is_user_deleted
 
     sb = get_supabase_client()  # Use service key
+    cid = get_correlation_id()
 
     # Fetch competitor URL
     try:
@@ -1172,7 +1212,7 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
 
     # Scrape the URL
     try:
-        scrape_result = await scrape_url(url)
+        scrape_result = await scrape_url(url, correlation_id=cid)
     except Exception as e:
         logger.error(f"Unexpected exception in scrape_url for {url}: {e}")
         failure_reason, friendly_msg = classify_scrape_exception(e)
@@ -1230,6 +1270,7 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
                 competitor_id=competitor_id,
                 new_price=scrape_result.price,
                 currency=scrape_result.currency,
+                correlation_id=cid,
             )
         except Exception as e:
             logger.error(f"Alert evaluation failed for competitor {competitor_id}: {e}")
@@ -1252,6 +1293,7 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
                 "retry_count": scrape_result.retry_count,
             },
             "alert_result": None,
+            "correlation_id": cid,
         }
 
     # Automatically invalidate dashboard cache when new price scrapes are persisted
@@ -1271,4 +1313,5 @@ async def scrape_and_check_alerts(competitor_id: str) -> dict[str, Any]:
             "retry_count": scrape_result.retry_count,
         },
         "alert_result": alert_result,
+        "correlation_id": cid,
     }

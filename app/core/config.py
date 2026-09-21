@@ -26,6 +26,15 @@ class Settings(BaseSettings):
         default_factory=lambda: DEFAULT_JWT_ALLOWED_ALGORITHMS.copy()
     )
     default_rate_limit: str = "60/minute"
+    log_format: Literal["json", "text", "auto"] = "auto"
+
+    @field_validator("log_format", mode="before")
+    @classmethod
+    def normalize_log_format(cls, value: object) -> object:
+        if isinstance(value, str):
+            val = value.lower().strip()
+            return val if val else "auto"
+        return value or "auto"
 
     @field_validator("env", mode="before")
     @classmethod
