@@ -100,6 +100,7 @@ class DigestService:
 
         email_enabled = bool(settings.get("email_enabled"))
         webhook_enabled = bool(settings.get("webhook_enabled"))
+        webhook_response_code: int | None = None
         errors: list[str] = []
 
         self._acquire_lease(
@@ -166,6 +167,7 @@ class DigestService:
                             logger.exception("Webhook delivery error for user %s: %s", user_id, exc)
                             webhook_result = {"success": False, "error": str(exc)}
                         result["webhook_sent"] = bool(webhook_result.get("success"))
+                        webhook_response_code = webhook_result.get("status_code")
                         if not result["webhook_sent"]:
                             errors.append(
                                 f"Webhook: {webhook_result.get('error', 'delivery failed')}"
@@ -189,6 +191,7 @@ class DigestService:
             success,
             email_enabled=email_enabled,
             webhook_enabled=webhook_enabled,
+            response_code=webhook_response_code,
         )
         return result
 
@@ -576,6 +579,7 @@ class DigestService:
         success: bool,
         email_enabled: bool = True,
         webhook_enabled: bool = False,
+        response_code: int | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         counts = summary["counts"]
@@ -587,18 +591,21 @@ class DigestService:
             "sent" if result["webhook_sent"]
             else ("failed" if webhook_enabled else "disabled")
         )
-        self.client.table("alert_history").update(
-            {
-                "user_id": user_id,
-                "digest_sent_at": now,
-                "alerts_count": len(alerts),
-                **counts,
-                "email_status": email_status,
-                "webhook_status": webhook_status,
-                "error_message": "; ".join(errors)[:1000] or None,
-                "alert_ids": [alert["id"] for alert in alerts],
-            }
-        ).eq("id", digest_id).execute()
+        history_update = {
+            "user_id": user_id,
+            "digest_sent_at": now,
+            "alerts_count": len(alerts),
+            **counts,
+            "email_status": email_status,
+            "webhook_status": webhook_status,
+            "error_message": "; ".join(errors)[:1000] or None,
+            "alert_ids": [alert["id"] for alert in alerts],
+        }
+        if response_code is not None:
+            history_update["response_code"] = response_code
+        elif "response_code" in result:
+            history_update["response_code"] = result.get("response_code")
+        self.client.table("alert_history").update(history_update).eq("id", digest_id).execute()
 
         if success:
             self.client.table("pending_alerts").update(

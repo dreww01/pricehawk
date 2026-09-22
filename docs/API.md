@@ -287,6 +287,12 @@ Response:
 | `GET` | `/api/alerts/history` | `limit`, default 20, max 100 | List digest delivery history. |
 | `POST` | `/api/alerts/digests/run` | `{"force":false,"dry_run":false}` | Run the current user's digest and return channel/count totals. Dry runs never claim or clear alerts; `force=true` requires an admin/service-role JWT. |
 | `POST` | `/api/alerts/test` | optional `email` | Send a test email. |
+| `GET` | `/api/alerts/webhook` | None | Get the current user's registered webhook configuration. |
+| `POST` | `/api/alerts/webhook` | `{"webhook_url": "...", "enabled": true, "webhook_secret": "..."}` | Register or update webhook endpoint URL with optional secret signature. |
+| `PUT` | `/api/alerts/webhook` | `{"webhook_url": "...", "enabled": true, "webhook_secret": "..."}` | Update webhook endpoint configuration. |
+| `DELETE` | `/api/alerts/webhook` | None | Disable and delete registered webhook endpoint. |
+| `POST` | `/api/alerts/webhook/test` | optional `{"webhook_url": "...", "webhook_secret": "..."}` | Send a test webhook ping to verify endpoint functionality and audit delivery. |
+| `POST` | `/api/alerts/check/{competitor_id}` | `{"price": 100.0, "currency": "USD", "threshold_percent": 10.0}` | Evaluate price drop conditions against user/competitor thresholds or target percentage. |
 | `PATCH` | `/api/alerts/competitors/{competitor_id}/accept-currency` | `{"currency":"USD"}` | Accept detected currency for one competitor. |
 | `POST` | `/api/alerts/accept-all-currencies` | None | Accept all pending currency changes for current user. |
 

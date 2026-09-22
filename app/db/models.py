@@ -325,16 +325,21 @@ class PendingAlertsListResponse(BaseModel):
 
 
 class AlertHistoryResponse(BaseModel):
-    """A persisted digest delivery attempt."""
+    """A persisted digest or real-time alert delivery attempt."""
 
     id: str
     digest_sent_at: datetime
+    timestamp: datetime | None = None
     alerts_count: int
     price_drops: int = 0
     price_increases: int = 0
     currency_changes: int = 0
     email_status: str
     webhook_status: str = "disabled"
+    delivered: bool = False
+    delivered_status: str = "disabled"
+    response_code: int | None = None
+    status_code: int | None = None
     error_message: str | None = None
 
 
@@ -342,6 +347,90 @@ class AlertHistoryListResponse(BaseModel):
     """List of alert history."""
     alerts: list[AlertHistoryResponse]
     total: int
+
+
+class WebhookRegisterRequest(BaseModel):
+    """Request to register or update an outgoing webhook endpoint."""
+
+    webhook_url: str = Field(..., max_length=2048)
+    webhook_secret: str | None = Field(default=None, max_length=255)
+    enabled: bool = True
+
+    @field_validator("webhook_url")
+    @classmethod
+    def validate_webhook_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value.startswith("https://"):
+            raise ValueError("Webhook URL must use HTTPS")
+        return value
+
+
+class WebhookConfigResponse(BaseModel):
+    """Current webhook configuration for a user."""
+
+    webhook_url: str | None = None
+    webhook_enabled: bool = False
+    webhook_secret_configured: bool = False
+    message: str = "Webhook configuration loaded"
+
+
+class TestWebhookRequest(BaseModel):
+    """Request to send a test webhook ping."""
+    __test__ = False
+
+    webhook_url: str | None = None
+    webhook_secret: str | None = None
+
+
+class TestWebhookResponse(BaseModel):
+    """Response from test webhook action."""
+    __test__ = False
+
+    success: bool
+    message: str
+    status_code: int | None = None
+    response_code: int | None = None
+    error: str | None = None
+
+
+class PriceAlertEvent(BaseModel):
+    """Real-time JSON alert event payload dispatched to store owners via webhook."""
+
+    event: str = "price_drop"
+    event_type: str = "price_drop"
+    alert_id: str
+    user_id: str
+    product_id: str
+    product_name: str | None = None
+    competitor_id: str
+    retailer_name: str | None = None
+    competitor_url: str | None = None
+    old_price: Decimal | float | None = None
+    new_price: Decimal | float | None = None
+    price_change_percent: Decimal | float | None = None
+    threshold_percent: Decimal | float | None = None
+    currency: str = "USD"
+    detected_at: str
+    timestamp: str
+
+
+class CheckPriceDropRequest(BaseModel):
+    """Request to evaluate price drop conditions for a competitor."""
+
+    price: Decimal = Field(..., gt=0)
+    currency: str = Field(default="USD", max_length=3)
+    threshold_percent: Decimal | None = Field(default=None, ge=0, le=100)
+    target_percentage: Decimal | None = Field(default=None, ge=0, le=100)
+
+
+class CheckPriceDropResponse(BaseModel):
+    """Response from price drop evaluation."""
+
+    alert_created: bool
+    alert_type: str | None = None
+    change_percent: Decimal | float | None = None
+    message: str
+    suppressed: bool = False
 
 
 class TestEmailRequest(BaseModel):
