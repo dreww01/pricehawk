@@ -5,7 +5,10 @@ Handles user alert settings, pending alerts, alert history, and test emails.
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 from supabase import Client
 
@@ -13,6 +16,7 @@ from app.core.flash import flash
 from app.core.logging import get_correlation_id
 from app.core.security import get_current_user, CurrentUser
 from app.db.database import get_user_supabase_client, get_supabase_client
+from app.middleware.rate_limit import limiter, API_RATE_LIMIT
 from app.db.models import (
     AcceptAllCurrenciesResponse,
     AcceptCurrencyResponse,
@@ -20,6 +24,8 @@ from app.db.models import (
     AlertHistoryResponse,
     AlertSettingsResponse,
     AlertSettingsUpdate,
+    CheckPriceDropRequest,
+    CheckPriceDropResponse,
     DigestRunRequest,
     DigestRunResponse,
     ErrorEnvelope,
@@ -27,9 +33,15 @@ from app.db.models import (
     PendingAlertsListResponse,
     TestEmailRequest,
     TestEmailResponse,
+    TestWebhookRequest,
+    TestWebhookResponse,
+    WebhookConfigResponse,
+    WebhookRegisterRequest,
 )
+from app.services.alert_service import AlertService
 from app.services.email_service import EmailService
 from app.services.digest_service import DigestService
+from app.services.webhook_service import WebhookService, WebhookDeliveryError
 from app.services.dashboard_cache import invalidate_dashboard_cache
 
 
@@ -292,8 +304,7 @@ async def get_alert_history(
         response = (
             sb.table("alert_history")
             .select(
-                "id, digest_sent_at, alerts_count, price_drops, price_increases, "
-                "currency_changes, email_status, webhook_status, error_message"
+                "*"
             )
             .eq("user_id", current_user.id)
             .order("digest_sent_at", desc=True)
@@ -301,20 +312,36 @@ async def get_alert_history(
             .execute()
         )
 
-        history = [
-            AlertHistoryResponse(
-                id=row["id"],
-                digest_sent_at=row["digest_sent_at"],
-                alerts_count=row["alerts_count"],
-                price_drops=row.get("price_drops", 0),
-                price_increases=row.get("price_increases", 0),
-                currency_changes=row.get("currency_changes", 0),
-                email_status=row["email_status"],
-                webhook_status=row.get("webhook_status", "disabled"),
-                error_message=row.get("error_message")
+        history = []
+        for row in response.data or []:
+            sent_at = row["digest_sent_at"]
+            resp_code = row.get("response_code")
+            wh_status = row.get("webhook_status", "disabled")
+            em_status = row.get("email_status", "disabled")
+            is_delivered = wh_status == "sent" or em_status == "sent"
+            del_status = (
+                "delivered"
+                if is_delivered
+                else ("failed" if (wh_status == "failed" or em_status == "failed") else "disabled")
             )
-            for row in response.data
-        ]
+            history.append(
+                AlertHistoryResponse(
+                    id=row["id"],
+                    digest_sent_at=sent_at,
+                    timestamp=sent_at,
+                    alerts_count=row["alerts_count"],
+                    price_drops=row.get("price_drops", 0),
+                    price_increases=row.get("price_increases", 0),
+                    currency_changes=row.get("currency_changes", 0),
+                    email_status=em_status,
+                    webhook_status=wh_status,
+                    delivered=is_delivered,
+                    delivered_status=del_status,
+                    response_code=resp_code,
+                    status_code=resp_code,
+                    error_message=row.get("error_message"),
+                )
+            )
 
         return AlertHistoryListResponse(alerts=history, total=len(history))
 
@@ -416,6 +443,307 @@ async def send_test_email(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to send test email"
+        )
+
+
+@router.get(
+    "/webhook",
+    response_model=WebhookConfigResponse,
+    summary="Get webhook configuration",
+    description="Retrieve the current user's registered webhook endpoint settings.",
+)
+async def get_webhook_config(
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> WebhookConfigResponse:
+    """Get the current user's registered webhook endpoint."""
+    try:
+        response = (
+            sb.table("user_alert_settings")
+            .select("webhook_url, webhook_enabled, webhook_secret")
+            .eq("user_id", current_user.id)
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            rec = response.data[0]
+            return WebhookConfigResponse(
+                webhook_url=rec.get("webhook_url"),
+                webhook_enabled=bool(rec.get("webhook_enabled")),
+                webhook_secret_configured=bool(rec.get("webhook_secret")),
+                message="Webhook configuration loaded",
+            )
+        return WebhookConfigResponse(
+            webhook_url=None,
+            webhook_enabled=False,
+            webhook_secret_configured=False,
+            message="No webhook configuration found",
+        )
+    except Exception as exc:
+        logger.exception("Failed to get webhook configuration: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to load webhook configuration",
+        )
+
+
+@router.post(
+    "/webhook",
+    response_model=WebhookConfigResponse,
+    summary="Register webhook endpoint",
+    description="Register an outgoing webhook endpoint URL with an optional secret signature to receive real-time JSON alert payloads.",
+)
+@router.put(
+    "/webhook",
+    response_model=WebhookConfigResponse,
+    summary="Update webhook endpoint",
+    description="Update outgoing webhook endpoint configuration with an optional secret signature.",
+)
+@limiter.limit(API_RATE_LIMIT)
+async def register_webhook(
+    request: Request,
+    body: WebhookRegisterRequest,
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> WebhookConfigResponse:
+    """Register or update an outgoing webhook endpoint URL with optional secret signature."""
+    try:
+        try:
+            WebhookService._validate_url(body.webhook_url)
+        except WebhookDeliveryError as v_err:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(v_err),
+            )
+
+        update_payload = {
+            "webhook_url": body.webhook_url,
+            "webhook_enabled": body.enabled,
+        }
+        if body.webhook_secret is not None:
+            update_payload["webhook_secret"] = body.webhook_secret
+
+        res = (
+            sb.table("user_alert_settings")
+            .update(update_payload)
+            .eq("user_id", current_user.id)
+            .execute()
+        )
+        if not res.data:
+            insert_data = {
+                "user_id": current_user.id,
+                "email_enabled": True,
+                "digest_frequency_hours": 24,
+                "alert_price_drop": True,
+                "alert_price_increase": True,
+                **update_payload,
+            }
+            res = sb.table("user_alert_settings").insert(insert_data).execute()
+
+        invalidate_dashboard_cache(current_user.id)
+        saved = res.data[0] if res.data else update_payload
+        return WebhookConfigResponse(
+            webhook_url=saved.get("webhook_url"),
+            webhook_enabled=bool(saved.get("webhook_enabled")),
+            webhook_secret_configured=bool(saved.get("webhook_secret")),
+            message="Webhook configuration saved successfully",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to register webhook: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save webhook configuration",
+        )
+
+
+@router.delete(
+    "/webhook",
+    response_model=WebhookConfigResponse,
+    summary="Delete webhook endpoint",
+    description="Disable and clear the registered webhook endpoint URL.",
+)
+async def delete_webhook(
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> WebhookConfigResponse:
+    """Disable and delete registered webhook endpoint configuration."""
+    try:
+        sb.table("user_alert_settings").update({
+            "webhook_enabled": False,
+            "webhook_url": None,
+            "webhook_secret": None,
+        }).eq("user_id", current_user.id).execute()
+        invalidate_dashboard_cache(current_user.id)
+        return WebhookConfigResponse(
+            webhook_url=None,
+            webhook_enabled=False,
+            webhook_secret_configured=False,
+            message="Webhook endpoint deleted successfully",
+        )
+    except Exception as exc:
+        logger.exception("Failed to delete webhook: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to delete webhook configuration",
+        )
+
+
+@router.post(
+    "/test-webhook",
+    response_model=TestWebhookResponse,
+    summary="Send test webhook ping",
+    description="Send a sample ping to verify the registered webhook endpoint works.",
+)
+@router.post(
+    "/webhook/test",
+    response_model=TestWebhookResponse,
+    summary="Send test webhook ping",
+    description="Send a sample ping to verify the registered webhook endpoint works.",
+)
+@limiter.limit(API_RATE_LIMIT)
+async def send_test_webhook(
+    request: Request,
+    body: TestWebhookRequest | None = None,
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> TestWebhookResponse:
+    """Send a sample ping to verify that an endpoint works."""
+    try:
+        target_url = body.webhook_url if body else None
+        target_secret = body.webhook_secret if body else None
+
+        if not target_url:
+            settings_res = (
+                sb.table("user_alert_settings")
+                .select("webhook_url, webhook_secret, webhook_enabled")
+                .eq("user_id", current_user.id)
+                .limit(1)
+                .execute()
+            )
+            if settings_res.data:
+                target_url = settings_res.data[0].get("webhook_url")
+                if target_secret is None:
+                    target_secret = settings_res.data[0].get("webhook_secret")
+
+        if not target_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No webhook URL configured or provided",
+            )
+
+        cid = get_correlation_id()
+        wh_service = WebhookService()
+        try:
+            result = wh_service.send_test_ping(
+                webhook_url=target_url,
+                webhook_secret=target_secret,
+                correlation_id=cid,
+                extra_data={"user_id": current_user.id},
+            )
+        except WebhookDeliveryError as v_err:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(v_err),
+            )
+
+        # Log delivery in alert_history for audit
+        service_sb = get_supabase_client()
+        history_record = {
+            "user_id": current_user.id,
+            "digest_sent_at": datetime.now(timezone.utc).isoformat(),
+            "alerts_count": 1,
+            "price_drops": 0,
+            "price_increases": 0,
+            "currency_changes": 0,
+            "email_status": "disabled",
+            "webhook_status": "sent" if result.get("success") else "failed",
+            "response_code": result.get("status_code"),
+            "error_message": result.get("error"),
+            "alert_ids": [],
+        }
+        try:
+            service_sb.table("alert_history").insert(history_record).execute()
+        except Exception as h_err:
+            logger.warning("Failed to insert alert_history audit row: %s", h_err)
+
+        if result.get("success"):
+            return TestWebhookResponse(
+                success=True,
+                message="Test webhook ping sent successfully",
+                status_code=result.get("status_code"),
+                response_code=result.get("status_code"),
+                error=None,
+            )
+        else:
+            return TestWebhookResponse(
+                success=False,
+                message=f"Test webhook delivery failed: {result.get('error')}",
+                status_code=result.get("status_code"),
+                response_code=result.get("status_code"),
+                error=result.get("error"),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to send test webhook for user %s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to send test webhook",
+        )
+
+
+@router.post(
+    "/check/{competitor_id}",
+    response_model=CheckPriceDropResponse,
+    summary="Check price drop conditions",
+    description="Check price drop conditions for a competitor given a price.",
+)
+@limiter.limit(API_RATE_LIMIT)
+async def check_price_drop(
+    request: Request,
+    competitor_id: str,
+    body: CheckPriceDropRequest,
+    sb: Client = Depends(get_user_supabase_client),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CheckPriceDropResponse:
+    """Check price drop conditions whenever a competitor price is updated."""
+    try:
+        comp_res = (
+            sb.table("competitors")
+            .select("id, product_id, products(user_id)")
+            .eq("id", competitor_id)
+            .execute()
+        )
+        if not comp_res.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Competitor not found")
+        comp = comp_res.data[0]
+        if comp.get("products", {}).get("user_id") != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this competitor")
+
+        alert_svc = AlertService()
+        cid = get_correlation_id()
+        res = await alert_svc.check_price_change_and_alert(
+            competitor_id=competitor_id,
+            new_price=body.price,
+            currency=body.currency,
+            correlation_id=cid,
+        )
+        return CheckPriceDropResponse(
+            alert_created=res.get("alert_created", False),
+            alert_type=res.get("alert_type"),
+            change_percent=res.get("change_percent"),
+            message=res.get("message", ""),
+            suppressed=res.get("suppressed", False),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to check price drop conditions: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to check price drop conditions",
         )
 
 

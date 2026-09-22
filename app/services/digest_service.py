@@ -166,6 +166,7 @@ class DigestService:
                             logger.exception("Webhook delivery error for user %s: %s", user_id, exc)
                             webhook_result = {"success": False, "error": str(exc)}
                         result["webhook_sent"] = bool(webhook_result.get("success"))
+                        result["response_code"] = webhook_result.get("status_code")
                         if not result["webhook_sent"]:
                             errors.append(
                                 f"Webhook: {webhook_result.get('error', 'delivery failed')}"
@@ -587,18 +588,19 @@ class DigestService:
             "sent" if result["webhook_sent"]
             else ("failed" if webhook_enabled else "disabled")
         )
-        self.client.table("alert_history").update(
-            {
-                "user_id": user_id,
-                "digest_sent_at": now,
-                "alerts_count": len(alerts),
-                **counts,
-                "email_status": email_status,
-                "webhook_status": webhook_status,
-                "error_message": "; ".join(errors)[:1000] or None,
-                "alert_ids": [alert["id"] for alert in alerts],
-            }
-        ).eq("id", digest_id).execute()
+        history_update = {
+            "user_id": user_id,
+            "digest_sent_at": now,
+            "alerts_count": len(alerts),
+            **counts,
+            "email_status": email_status,
+            "webhook_status": webhook_status,
+            "error_message": "; ".join(errors)[:1000] or None,
+            "alert_ids": [alert["id"] for alert in alerts],
+        }
+        if "response_code" in result:
+            history_update["response_code"] = result.get("response_code")
+        self.client.table("alert_history").update(history_update).eq("id", digest_id).execute()
 
         if success:
             self.client.table("pending_alerts").update(
