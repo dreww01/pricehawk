@@ -2,6 +2,7 @@
 
 from enum import Enum
 from typing import Any
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -144,7 +145,7 @@ def create_error_response(
         message = str(detail)
 
     payload: dict[str, Any] = {
-        "detail": detail,
+        "detail": jsonable_encoder(detail),
         "error_code": resolved_code.value,
         "message": message,
     }

@@ -521,7 +521,8 @@ async def register_webhook(
             "webhook_enabled": body.enabled,
         }
         if body.webhook_secret is not None:
-            update_payload["webhook_secret"] = body.webhook_secret
+            clean_secret = body.webhook_secret.strip()
+            update_payload["webhook_secret"] = clean_secret if clean_secret else None
 
         res = (
             sb.table("user_alert_settings")
@@ -724,11 +725,13 @@ async def check_price_drop(
 
         alert_svc = AlertService()
         cid = get_correlation_id()
+        custom_threshold = body.threshold_percent if body.threshold_percent is not None else body.target_percentage
         res = await alert_svc.check_price_change_and_alert(
             competitor_id=competitor_id,
             new_price=body.price,
             currency=body.currency,
             correlation_id=cid,
+            custom_threshold=custom_threshold,
         )
         return CheckPriceDropResponse(
             alert_created=res.get("alert_created", False),

@@ -419,6 +419,8 @@ class CheckPriceDropRequest(BaseModel):
 
     price: Decimal = Field(..., gt=0)
     currency: str = Field(default="USD", max_length=3)
+    threshold_percent: Decimal | None = Field(default=None, ge=0, le=100)
+    target_percentage: Decimal | None = Field(default=None, ge=0, le=100)
 
 
 class CheckPriceDropResponse(BaseModel):

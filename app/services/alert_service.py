@@ -48,20 +48,22 @@ class AlertService:
     async def check_price_change_and_alert(
         self,
         competitor_id: str,
-        new_price: Decimal,
+        new_price: Decimal | float,
         currency: str = "USD",
         correlation_id: str | None = None,
+        custom_threshold: Decimal | float | None = None,
     ) -> dict[str, Any]:
         """
         Check if price changed beyond threshold and create pending alert.
 
-        This is called after each successful scrape.
+        This is called after each successful scrape or on manual price check.
 
         Args:
             competitor_id: UUID of competitor
-            new_price: Newly scraped price
+            new_price: Newly scraped or checked price
             currency: Currency code
             correlation_id: Optional correlation ID for tracing
+            custom_threshold: Optional custom threshold percentage
 
         Returns:
             dict with keys:
@@ -72,16 +74,22 @@ class AlertService:
         """
         if correlation_id:
             with correlation_context(correlation_id):
-                return await self._check_price_change_and_alert_impl(competitor_id, new_price, currency)
-        return await self._check_price_change_and_alert_impl(competitor_id, new_price, currency)
+                return await self._check_price_change_and_alert_impl(
+                    competitor_id, new_price, currency, custom_threshold=custom_threshold
+                )
+        return await self._check_price_change_and_alert_impl(
+            competitor_id, new_price, currency, custom_threshold=custom_threshold
+        )
 
     async def _check_price_change_and_alert_impl(
         self,
         competitor_id: str,
-        new_price: Decimal,
+        new_price: Decimal | float,
         currency: str = "USD",
+        custom_threshold: Decimal | float | None = None,
     ) -> dict[str, Any]:
         try:
+            new_price = Decimal(str(new_price))
             sb = get_supabase_client()  # Use service key
 
             # Fetch competitor info including product and user
@@ -101,10 +109,13 @@ class AlertService:
                     "message": "Competitor not found"
                 }
 
-            competitor = comp_response.data
+            competitor = comp_response.data[0] if isinstance(comp_response.data, list) else comp_response.data
             product = competitor["products"]
             user_id = product["user_id"]
-            threshold_percent = Decimal(str(competitor["alert_threshold_percent"]))
+            if custom_threshold is not None:
+                threshold_percent = abs(Decimal(str(custom_threshold)))
+            else:
+                threshold_percent = abs(Decimal(str(competitor["alert_threshold_percent"])))
 
             # Fetch previous price (most recent successful scrape)
             prev_response = (
@@ -114,12 +125,12 @@ class AlertService:
                 .eq("scrape_status", "success")
                 .not_.is_("price", "null")
                 .order("scraped_at", desc=True)
-                .limit(2)  # Get last 2 to skip the just-inserted one
+                .limit(2)  # Get last 2 to skip the just-inserted one if applicable
                 .execute()
             )
 
-            # If less than 2 records, this is first scrape - no alert
-            if not prev_response.data or len(prev_response.data) < 2:
+            # If no records, this is first scrape - no alert
+            if not prev_response.data or len(prev_response.data) == 0:
                 return {
                     "alert_created": False,
                     "alert_type": None,
@@ -127,9 +138,23 @@ class AlertService:
                     "message": "No previous price to compare (first scrape)"
                 }
 
-            # Get the second-to-last price (previous price before this scrape)
-            old_price = Decimal(str(prev_response.data[1]["price"]))
-            old_currency = prev_response.data[1].get("currency", "USD")
+            # If the latest record in price_history has the exact price as new_price,
+            # it means new_price was already inserted into price_history just prior to this call.
+            # In that case, the previous price is the second record.
+            if Decimal(str(prev_response.data[0]["price"])) == new_price:
+                if len(prev_response.data) < 2:
+                    return {
+                        "alert_created": False,
+                        "alert_type": None,
+                        "change_percent": None,
+                        "message": "No previous price to compare (first scrape)"
+                    }
+                old_record = prev_response.data[1]
+            else:
+                old_record = prev_response.data[0]
+
+            old_price = Decimal(str(old_record["price"]))
+            old_currency = old_record.get("currency", "USD")
 
             # Currency mismatch check - create currency_changed alert instead of price alert
             if old_currency != currency:
@@ -142,7 +167,7 @@ class AlertService:
                     "new_price": float(new_price),
                     "old_currency": old_currency,
                     "new_currency": currency,
-                    "detected_at": datetime.now().isoformat()
+                    "detected_at": datetime.now(timezone.utc).isoformat()
                 }
                 sb.table("pending_alerts").insert(alert_data).execute()
 
@@ -182,8 +207,8 @@ class AlertService:
             elif change_percent >= threshold_percent:
                 alert_type = "price_increase"
             else:
-                # Check for significant absolute change
-                if abs(change_amount) >= self.config.MIN_SIGNIFICANT_CHANGE_AMOUNT:
+                # Check for significant absolute change (only if no custom threshold specified)
+                if custom_threshold is None and abs(change_amount) >= self.config.MIN_SIGNIFICANT_CHANGE_AMOUNT:
                     alert_type = "price_drop" if change_amount < 0 else "price_increase"
                 else:
                     return {
