@@ -756,6 +756,116 @@ async def test_duplicate_alert_suppression_prevents_alert_fatigue(monkeypatch):
     assert res3["alert_type"] == "price_drop"
 
 
+@pytest.mark.asyncio
+async def test_alert_service_competitor_not_found(monkeypatch):
+    """Verify AlertService._check_price_change_and_alert_impl returns not found when competitor does not exist."""
+    db = MockDatabaseClient({"competitors": []})
+    monkeypatch.setattr("app.services.alert_service.get_supabase_client", lambda: db)
+    svc = AlertService()
+    res = await svc.check_price_change_and_alert("comp-nonexistent", Decimal("50.00"))
+    assert res["alert_created"] is False
+    assert res["alert_type"] is None
+    assert res["change_percent"] is None
+    assert res["message"] == "Competitor not found"
+
+
+@pytest.mark.asyncio
+async def test_alert_service_first_scrape_no_prior_history(monkeypatch):
+    """Verify AlertService handles first scrape when no prior price history exists."""
+    comp_id = "comp-first"
+    db = MockDatabaseClient({
+        "competitors": [{
+            "id": comp_id,
+            "url": "https://store.example/item",
+            "retailer_name": "Store",
+            "alert_threshold_percent": Decimal("10.00"),
+            "product_id": "p-first",
+            "products": {"id": "p-first", "product_name": "Item", "user_id": "user-1"},
+        }],
+        "price_history": [],
+        "pending_alerts": [],
+    })
+    monkeypatch.setattr("app.services.alert_service.get_supabase_client", lambda: db)
+    svc = AlertService()
+    res = await svc.check_price_change_and_alert(comp_id, Decimal("50.00"))
+    assert res["alert_created"] is False
+    assert res["alert_type"] is None
+    assert res["change_percent"] is None
+    assert res["message"] == "No previous price to compare (first scrape)"
+    assert len(db.tables["pending_alerts"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_alert_service_first_scrape_with_single_identical_record(monkeypatch):
+    """Verify AlertService handles first scrape when the only record is the newly inserted price."""
+    comp_id = "comp-first-single"
+    db = MockDatabaseClient({
+        "competitors": [{
+            "id": comp_id,
+            "url": "https://store.example/item",
+            "retailer_name": "Store",
+            "alert_threshold_percent": Decimal("10.00"),
+            "product_id": "p-first-s",
+            "products": {"id": "p-first-s", "product_name": "Item", "user_id": "user-1"},
+        }],
+        "price_history": [
+            {"competitor_id": comp_id, "price": Decimal("50.00"), "currency": "USD", "scrape_status": "success"},
+        ],
+        "pending_alerts": [],
+    })
+    monkeypatch.setattr("app.services.alert_service.get_supabase_client", lambda: db)
+    svc = AlertService()
+    res = await svc.check_price_change_and_alert(comp_id, Decimal("50.00"))
+    assert res["alert_created"] is False
+    assert res["alert_type"] is None
+    assert res["change_percent"] is None
+    assert res["message"] == "No previous price to compare (first scrape)"
+    assert len(db.tables["pending_alerts"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_alert_service_disabled_notifications(monkeypatch):
+    """Verify AlertService skips creating alerts and sending webhooks when user disabled notifications."""
+    comp_id = "comp-disabled"
+    user_id = "user-disabled"
+    db = MockDatabaseClient({
+        "competitors": [{
+            "id": comp_id,
+            "url": "https://store.example/item",
+            "retailer_name": "Store",
+            "alert_threshold_percent": Decimal("10.00"),
+            "product_id": "p-dis",
+            "products": {"id": "p-dis", "product_name": "Item", "user_id": user_id},
+        }],
+        "price_history": [
+            {"competitor_id": comp_id, "price": Decimal("100.00"), "currency": "USD", "scrape_status": "success"},
+        ],
+        "user_alert_settings": [{
+            "user_id": user_id,
+            "email_enabled": False,
+            "webhook_enabled": False,
+            "alert_price_drop": True,
+            "alert_price_increase": True,
+        }],
+        "pending_alerts": [],
+    })
+    monkeypatch.setattr("app.services.alert_service.get_supabase_client", lambda: db)
+    dispatched_events = []
+    monkeypatch.setattr(
+        AlertService,
+        "dispatch_alert_webhook",
+        lambda self, uid, event, cid=None: dispatched_events.append(event)
+    )
+
+    svc = AlertService()
+    res = await svc.check_price_change_and_alert(comp_id, Decimal("70.00"))
+    assert res["alert_created"] is False
+    assert res["alert_type"] == "price_drop"
+    assert res["message"] == "User has disabled alert notifications"
+    assert len(db.tables["pending_alerts"]) == 0
+    assert len(dispatched_events) == 0
+
+
 # ---------------------------------------------------------------------------
 # 5. Alert History Audit Log Tests
 # ---------------------------------------------------------------------------
@@ -966,6 +1076,76 @@ def test_api_check_price_drop_forbidden_for_other_user():
         client = TestClient(app)
         res = client.post("/api/alerts/check/comp-other", json={"price": 50.0})
         assert res.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "invalid_payload",
+    [
+        {"price": 0},
+        {"price": -0.01},
+        {"price": -100.0},
+        {"price": 50.0, "threshold_percent": 100.01},
+        {"price": 50.0, "threshold_percent": 150.0},
+        {"price": 50.0, "threshold_percent": -0.01},
+        {"price": 50.0, "threshold_percent": -10.0},
+        {"price": 50.0, "target_percentage": 100.01},
+        {"price": 50.0, "target_percentage": 200.0},
+        {"price": 50.0, "target_percentage": -1.0},
+        {},
+        {"price": "invalid-price"},
+        {"price": 50.0, "currency": "TOOLONG"},
+    ],
+)
+def test_api_check_price_drop_input_validation_negative_boundaries(invalid_payload):
+    """Verify CheckPriceDropRequest rejects boundary violations with HTTP 422 Unprocessable Entity."""
+    db = MockDatabaseClient({"competitors": []})
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="user-1", email="store@example.com", role="authenticated"
+    )
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+    try:
+        client = TestClient(app)
+        res = client.post("/api/alerts/check/comp-1", json=invalid_payload)
+        assert res.status_code == 422
+        data = res.json()
+        assert data.get("error_code") == "VALIDATION_ERROR"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "valid_boundary_payload",
+    [
+        {"price": 0.01},
+        {"price": 100.0, "threshold_percent": 0.0},
+        {"price": 100.0, "threshold_percent": 100.0},
+        {"price": 100.0, "target_percentage": 0.0},
+        {"price": 100.0, "target_percentage": 100.0},
+    ],
+)
+def test_api_check_price_drop_input_validation_valid_boundaries(monkeypatch, valid_boundary_payload):
+    """Verify CheckPriceDropRequest accepts valid boundary values (0, 100, min price > 0)."""
+    comp_id = "comp-valid-boundary"
+    user_id = "user-1"
+    db = MockDatabaseClient({
+        "competitors": [{
+            "id": comp_id,
+            "product_id": "p-1",
+            "products": {"user_id": user_id},
+        }]
+    })
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=user_id, email="store@example.com", role="authenticated"
+    )
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+    mock_eval = AsyncMock(return_value={"alert_created": False, "message": "OK"})
+    monkeypatch.setattr(AlertService, "check_price_change_and_alert", mock_eval)
+    try:
+        client = TestClient(app)
+        res = client.post(f"/api/alerts/check/{comp_id}", json=valid_boundary_payload)
+        assert res.status_code == 200
     finally:
         app.dependency_overrides.clear()
 
