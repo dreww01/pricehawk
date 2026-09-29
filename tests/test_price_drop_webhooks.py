@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import json
 import time
 
+import httpx
 import jwt
 import pytest
 from fastapi.testclient import TestClient
@@ -320,6 +321,96 @@ def test_send_test_webhook_missing_url_returns_400():
         app.dependency_overrides.clear()
 
 
+def test_send_test_webhook_ping_http_500_failure_records_audit_history(monkeypatch):
+    db = MockDatabaseClient({
+        "user_alert_settings": [{
+            "user_id": "user-1",
+            "webhook_url": "https://hooks.store.com/test",
+            "webhook_secret": "secret-123",
+            "webhook_enabled": True,
+        }],
+        "alert_history": [],
+    })
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="user-1", email="store@example.com", role="authenticated"
+    )
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+    monkeypatch.setattr("app.api.routes.alerts.get_supabase_client", lambda: db)
+
+    mock_send = Mock(return_value={
+        "success": False,
+        "status_code": 500,
+        "error": "HTTP 500: Internal Server Error",
+    })
+    monkeypatch.setattr(WebhookService, "send_test_ping", mock_send)
+
+    try:
+        client = TestClient(app)
+        res = client.post("/api/alerts/test-webhook", json={})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert data["status_code"] == 500
+        assert data["response_code"] == 500
+        assert data["error"] == "HTTP 500: Internal Server Error"
+        assert "failed" in data["message"].lower()
+
+        # Verify audit record inserted into alert_history
+        assert len(db.tables["alert_history"]) == 1
+        audit_entry = db.tables["alert_history"][0]
+        assert audit_entry["user_id"] == "user-1"
+        assert audit_entry["webhook_status"] == "failed"
+        assert audit_entry["response_code"] == 500
+        assert audit_entry["error_message"] == "HTTP 500: Internal Server Error"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_send_test_webhook_ping_timeout_failure_records_audit_history(monkeypatch):
+    db = MockDatabaseClient({
+        "user_alert_settings": [{
+            "user_id": "user-1",
+            "webhook_url": "https://hooks.store.com/test",
+            "webhook_secret": "secret-123",
+            "webhook_enabled": True,
+        }],
+        "alert_history": [],
+    })
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id="user-1", email="store@example.com", role="authenticated"
+    )
+    app.dependency_overrides[get_user_supabase_client] = lambda: db
+    monkeypatch.setattr("app.api.routes.alerts.get_supabase_client", lambda: db)
+
+    mock_send = Mock(return_value={
+        "success": False,
+        "status_code": None,
+        "error": "Connection timed out",
+    })
+    monkeypatch.setattr(WebhookService, "send_test_ping", mock_send)
+
+    try:
+        client = TestClient(app)
+        res = client.post("/api/alerts/test-webhook", json={})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is False
+        assert data["status_code"] is None
+        assert data["response_code"] is None
+        assert data["error"] == "Connection timed out"
+        assert "failed" in data["message"].lower()
+
+        # Verify audit record inserted into alert_history
+        assert len(db.tables["alert_history"]) == 1
+        audit_entry = db.tables["alert_history"][0]
+        assert audit_entry["user_id"] == "user-1"
+        assert audit_entry["webhook_status"] == "failed"
+        assert audit_entry["response_code"] is None
+        assert audit_entry["error_message"] == "Connection timed out"
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------------------
 # 3. Webhook Delivery & Secret HMAC Signature Tests
 # ---------------------------------------------------------------------------
@@ -382,6 +473,74 @@ def test_webhook_send_alert_with_secret_includes_hmac_signature(monkeypatch):
         signed_bytes = timestamp.encode("ascii") + b"." + captured["content"]
         expected_sig = hmac.new(secret.encode("utf-8"), signed_bytes, hashlib.sha256).hexdigest()
         assert headers["X-PriceHawk-Signature"] == f"sha256={expected_sig}"
+
+
+@pytest.mark.parametrize("status_code,err_text", [
+    (500, "Internal Server Error"),
+    (404, "Not Found"),
+    (400, "Bad Request"),
+])
+def test_webhook_send_alert_handles_http_status_error(monkeypatch, status_code, err_text):
+    wh = WebhookService()
+    monkeypatch.setattr(wh, "_validate_url", lambda url: {"93.184.216.34"})
+
+    def mock_post(url, content, headers):
+        resp = httpx.Response(status_code, text=err_text, request=httpx.Request("POST", url))
+        resp.raise_for_status()
+        return resp
+
+    with patch("httpx.Client.post", side_effect=mock_post):
+        result = wh.send_alert(
+            webhook_url="https://hooks.example.com/alerts",
+            payload={"event": "price_drop", "new_price": 50.0},
+        )
+        assert result["success"] is False
+        assert result["status_code"] == status_code
+        assert f"HTTP {status_code}: {err_text}" in result["error"]
+
+
+def test_webhook_send_alert_handles_network_timeout(monkeypatch):
+    wh = WebhookService()
+    monkeypatch.setattr(wh, "_validate_url", lambda url: {"93.184.216.34"})
+
+    with patch("httpx.Client.post", side_effect=httpx.ConnectTimeout("Connection timed out")):
+        result = wh.send_alert(
+            webhook_url="https://hooks.example.com/alerts",
+            payload={"event": "price_drop", "new_price": 50.0},
+        )
+        assert result["success"] is False
+        assert result["status_code"] is None
+        assert "Connection timed out" in result["error"]
+
+
+def test_webhook_send_alert_handles_connection_error(monkeypatch):
+    wh = WebhookService()
+    monkeypatch.setattr(wh, "_validate_url", lambda url: {"93.184.216.34"})
+
+    with patch("httpx.Client.post", side_effect=httpx.ConnectError("Failed to establish connection")):
+        result = wh.send_alert(
+            webhook_url="https://hooks.example.com/alerts",
+            payload={"event": "price_drop", "new_price": 50.0},
+        )
+        assert result["success"] is False
+        assert result["status_code"] is None
+        assert "Failed to establish connection" in result["error"]
+
+
+@pytest.mark.parametrize("invalid_url", [
+    "http://insecure.example.com/webhook",
+    "https://127.0.0.1/webhook",
+    "https://10.0.0.1/webhook",
+    "https://169.254.169.254/webhook",
+    "https://localhost/webhook",
+])
+def test_webhook_send_alert_rejects_ssrf_and_invalid_urls(invalid_url):
+    wh = WebhookService()
+    with pytest.raises(WebhookDeliveryError):
+        wh.send_alert(
+            webhook_url=invalid_url,
+            payload={"event": "price_drop", "new_price": 50.0},
+        )
 
 
 # ---------------------------------------------------------------------------
