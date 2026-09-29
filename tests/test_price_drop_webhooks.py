@@ -8,10 +8,13 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 import json
+import time
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import get_settings
 from app.core.security import CurrentUser, get_current_user
 from app.db.database import get_user_supabase_client, get_supabase_client
 from app.db.models import CheckPriceDropRequest, WebhookRegisterRequest
@@ -850,4 +853,104 @@ def test_send_test_webhook_ssrf_rejected():
         assert "private or reserved" in res.json()["detail"].lower()
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "method,endpoint,json_body",
+    [
+        ("GET", "/api/alerts/webhook", None),
+        ("POST", "/api/alerts/webhook", {"webhook_url": "https://example.com/webhook", "enabled": True}),
+        ("PUT", "/api/alerts/webhook", {"webhook_url": "https://example.com/webhook", "enabled": True}),
+        ("DELETE", "/api/alerts/webhook", None),
+        ("POST", "/api/alerts/test-webhook", {"webhook_url": "https://example.com/webhook"}),
+        ("POST", "/api/alerts/webhook/test", {"webhook_url": "https://example.com/webhook"}),
+        ("POST", "/api/alerts/check/comp-test-123", {"price": 99.99}),
+    ],
+)
+def test_new_webhook_and_check_endpoints_reject_unauthenticated(method, endpoint, json_body):
+    """Verify new webhook and price drop check endpoints reject requests missing authentication with HTTP 401."""
+    app.dependency_overrides.clear()
+    client = TestClient(app)
+    req_fn = getattr(client, method.lower())
+    kwargs = {}
+    if json_body is not None:
+        kwargs["json"] = json_body
+    resp = req_fn(endpoint, **kwargs)
+    assert resp.status_code == 401
+    data = resp.json()
+    assert data.get("error_code") == "NOT_AUTHENTICATED" or data.get("detail") == "Not authenticated"
+
+
+@pytest.mark.parametrize(
+    "method,endpoint,json_body",
+    [
+        ("GET", "/api/alerts/webhook", None),
+        ("POST", "/api/alerts/webhook", {"webhook_url": "https://example.com/webhook", "enabled": True}),
+        ("PUT", "/api/alerts/webhook", {"webhook_url": "https://example.com/webhook", "enabled": True}),
+        ("DELETE", "/api/alerts/webhook", None),
+        ("POST", "/api/alerts/test-webhook", {"webhook_url": "https://example.com/webhook"}),
+        ("POST", "/api/alerts/webhook/test", {"webhook_url": "https://example.com/webhook"}),
+        ("POST", "/api/alerts/check/comp-test-123", {"price": 99.99}),
+    ],
+)
+def test_new_webhook_and_check_endpoints_reject_ambient_cookie(method, endpoint, json_body):
+    """Verify new webhook and price drop check endpoints reject ambient session cookies with HTTP 401."""
+    app.dependency_overrides.clear()
+    settings = get_settings()
+    now = int(time.time())
+    payload = {
+        "sub": "user-test-ambient",
+        "email": "user@example.com",
+        "role": "authenticated",
+        "aud": "authenticated",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    token = jwt.encode(payload, settings.sb_jwt_secret, algorithm="HS256")
+    client = TestClient(app)
+    req_fn = getattr(client, method.lower())
+    kwargs = {"cookies": {"access_token": token}}
+    if json_body is not None:
+        kwargs["json"] = json_body
+    resp = req_fn(endpoint, **kwargs)
+    assert resp.status_code == 401
+    data = resp.json()
+    assert data.get("error_code") == "NOT_AUTHENTICATED" or data.get("detail") == "Not authenticated"
+
+
+@pytest.mark.parametrize(
+    "method,endpoint,json_body",
+    [
+        ("GET", "/api/alerts/webhook", None),
+        ("POST", "/api/alerts/webhook", {"webhook_url": "https://example.com/webhook", "enabled": True}),
+        ("PUT", "/api/alerts/webhook", {"webhook_url": "https://example.com/webhook", "enabled": True}),
+        ("DELETE", "/api/alerts/webhook", None),
+        ("POST", "/api/alerts/test-webhook", {"webhook_url": "https://example.com/webhook"}),
+        ("POST", "/api/alerts/webhook/test", {"webhook_url": "https://example.com/webhook"}),
+        ("POST", "/api/alerts/check/comp-test-123", {"price": 99.99}),
+    ],
+)
+def test_new_webhook_and_check_endpoints_reject_expired_token(method, endpoint, json_body):
+    """Verify new webhook and price drop check endpoints reject expired bearer tokens with HTTP 401."""
+    app.dependency_overrides.clear()
+    settings = get_settings()
+    now = int(time.time())
+    payload = {
+        "sub": "user-test-expired",
+        "email": "user@example.com",
+        "role": "authenticated",
+        "aud": "authenticated",
+        "iat": now - 7200,
+        "exp": now - 3600,
+    }
+    token = jwt.encode(payload, settings.sb_jwt_secret, algorithm="HS256")
+    client = TestClient(app)
+    req_fn = getattr(client, method.lower())
+    kwargs = {"headers": {"Authorization": f"Bearer {token}"}}
+    if json_body is not None:
+        kwargs["json"] = json_body
+    resp = req_fn(endpoint, **kwargs)
+    assert resp.status_code == 401
+    data = resp.json()
+    assert data.get("error_code") == "SESSION_EXPIRED" or "expired" in data.get("detail", "").lower()
 
