@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -132,12 +132,19 @@ def sample_price_history():
 
 @pytest.fixture
 def override_auth(mock_user):
-    """Override auth dependency with mock user."""
-    from app.core.security import get_current_user
+    """Override auth dependencies with mock user."""
+    from app.core.security import get_current_user, verify_token
 
     def mock_get_current_user():
         return mock_user
 
     app.dependency_overrides[get_current_user] = mock_get_current_user
+    app.dependency_overrides[verify_token] = mock_get_current_user
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def mock_auth(override_auth):
+    """Alias fixture for override_auth to support existing tests."""
+    yield
