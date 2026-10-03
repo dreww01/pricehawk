@@ -121,7 +121,8 @@ CREATE TABLE IF NOT EXISTS alert_history (
     email_status VARCHAR(20) DEFAULT 'pending' CHECK (email_status IN ('pending', 'sent', 'failed', 'disabled')),
     webhook_status VARCHAR(20) DEFAULT 'disabled' CHECK (webhook_status IN ('pending', 'sent', 'failed', 'disabled')),
     alert_ids UUID[] NOT NULL DEFAULT '{}',
-    error_message TEXT
+    error_message TEXT,
+    response_code INTEGER
 );
 
 
@@ -138,6 +139,7 @@ ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS price_increases INTEGER NOT N
 ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS currency_changes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS webhook_status VARCHAR(20) DEFAULT 'disabled';
 ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS alert_ids UUID[] NOT NULL DEFAULT '{}';
+ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS response_code INTEGER;
 
 -- Migrate existing check constraints on alert_history for additive statuses (e.g. 'disabled')
 ALTER TABLE alert_history DROP CONSTRAINT IF EXISTS alert_history_email_status_check;

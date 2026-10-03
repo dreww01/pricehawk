@@ -84,6 +84,50 @@
             </label>
         </div>
 
+        <!-- Outgoing Webhooks Card -->
+        <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
+            <div class="flex items-center justify-between mb-4">
+                <div>
+                    <h2 class="text-lg font-semibold">Outgoing Webhooks</h2>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Receive real-time JSON alert notifications when competitor prices drop.</p>
+                </div>
+                <label class="flex items-center gap-3 cursor-pointer">
+                    <div class="relative">
+                        <input type="checkbox" id="webhook-enabled" class="sr-only peer" />
+                        <div class="w-11 h-6 bg-gray-200 dark:bg-dark-border rounded-full peer-checked:bg-accent transition-colors"></div>
+                        <div class="absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full shadow transform peer-checked:translate-x-5 transition-transform"></div>
+                    </div>
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Enable</span>
+                </label>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Webhook Endpoint URL</label>
+                    <input type="url" id="webhook-url" placeholder="https://api.yourstore.com/webhooks/price-drops" class="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-300 dark:border-dark-border rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent" />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Must be an absolute HTTPS URL.</p>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Secret Signature (Optional)</label>
+                    <input type="password" id="webhook-secret" placeholder="Enter secret key for HMAC SHA-256 signatures (optional)" class="w-full px-4 py-2 bg-gray-50 dark:bg-white/5 border border-gray-300 dark:border-dark-border rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent" />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">When provided, payloads are signed and dispatched with X-PriceHawk-Signature.</p>
+                </div>
+
+                <div class="flex items-center gap-3 pt-2">
+                    <button id="save-webhook-btn" class="px-4 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-lg transition-colors">
+                        Save Webhook
+                    </button>
+                    <button id="test-webhook-btn" class="px-4 py-2 border border-gray-300 dark:border-dark-border text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-hover text-sm font-medium rounded-lg transition-colors flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        <span id="test-webhook-btn-text">Send Test Webhook</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Test Email Card -->
         <div class="bg-white dark:bg-dark-card rounded-xl border border-gray-200 dark:border-dark-border shadow-sm p-6">
             <h2 class="text-lg font-semibold mb-2">Test Configuration</h2>
@@ -171,6 +215,11 @@
             document.getElementById('digest-frequency').value = settings.digest_frequency_hours || 24;
             document.getElementById('alert-price-drop').checked = settings.alert_price_drop;
             document.getElementById('alert-price-increase').checked = settings.alert_price_increase;
+
+            const whEnabled = document.getElementById('webhook-enabled');
+            const whUrl = document.getElementById('webhook-url');
+            if (whEnabled) whEnabled.checked = Boolean(settings.webhook_enabled);
+            if (whUrl && settings.webhook_url) whUrl.value = settings.webhook_url;
 
             loadingState.classList.add('hidden');
             settingsContent.classList.remove('hidden');
@@ -262,18 +311,28 @@
             }
 
             container.innerHTML = data.alerts.map(item => {
-                const date = new Date(item.digest_sent_at).toLocaleDateString();
-                const statusClass = item.email_status === 'sent'
+                const date = new Date(item.digest_sent_at || item.timestamp).toLocaleString();
+                const isSuccess = item.delivered || item.webhook_status === 'sent' || item.email_status === 'sent';
+                const statusClass = isSuccess
                     ? 'bg-green-500/10 text-green-500'
-                    : 'bg-red-500/10 text-red-500';
+                    : ((item.webhook_status === 'failed' || item.email_status === 'failed') ? 'bg-red-500/10 text-red-500' : 'bg-gray-500/10 text-gray-400');
+                const deliveredLabel = isSuccess ? 'Delivered' : (item.webhook_status === 'failed' ? 'Failed' : (item.delivered_status || 'Disabled'));
+                const responseBadge = item.response_code || item.status_code
+                    ? `<span class="px-1.5 py-0.5 text-xs font-mono rounded bg-gray-200 dark:bg-dark-border text-gray-700 dark:text-gray-300">HTTP ${item.response_code || item.status_code}</span>`
+                    : '';
+                const channel = item.webhook_status !== 'disabled' ? 'Webhook' : 'Email';
 
                 return `
                     <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-white/5 rounded-lg">
                         <div>
-                            <div class="font-medium text-gray-900 dark:text-white">${item.alerts_count} alert${item.alerts_count !== 1 ? 's' : ''}</div>
-                            <div class="text-sm text-gray-500 dark:text-gray-400">${date}</div>
+                            <div class="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                                <span>${item.alerts_count} alert${item.alerts_count !== 1 ? 's' : ''} (${channel})</span>
+                                ${responseBadge}
+                            </div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400">${date}</div>
+                            ${item.error_message ? `<div class="text-xs text-red-500 mt-0.5 truncate max-w-sm">${escapeHtml(item.error_message)}</div>` : ''}
                         </div>
-                        <span class="px-2 py-0.5 text-xs font-medium rounded-full ${statusClass}">${item.email_status}</span>
+                        <span class="px-2 py-0.5 text-xs font-medium rounded-full ${statusClass}">${deliveredLabel}</span>
                     </div>
                 `;
             }).join('');
@@ -333,6 +392,94 @@
         }
     }
 
+    async function sendTestWebhook() {
+        const btn = document.getElementById('test-webhook-btn');
+        const btnText = document.getElementById('test-webhook-btn-text');
+        btn.disabled = true;
+        btnText.innerHTML = `
+            <svg class="h-4 w-4 animate-spin inline mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            Testing...
+        `;
+
+        try {
+            const urlInput = document.getElementById('webhook-url').value.trim();
+            const secretInput = document.getElementById('webhook-secret').value.trim();
+            const body = {};
+            if (urlInput) body.webhook_url = urlInput;
+            if (secretInput) body.webhook_secret = secretInput;
+
+            const response = await fetch('/api/alerts/test-webhook', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (handleAuthError(response)) return;
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(`Test webhook delivered! (Status: ${data.status_code || 200})`, 'success');
+                loadAlertHistory();
+            } else {
+                showToast(data.message || data.detail || 'Test webhook failed', 'error');
+                loadAlertHistory();
+            }
+        } catch (error) {
+            showToast('Unable to send test webhook ping.', 'error');
+        } finally {
+            btn.disabled = false;
+            btnText.textContent = 'Send Test Webhook';
+        }
+    }
+
+    async function saveWebhookSettings() {
+        const url = document.getElementById('webhook-url').value.trim();
+        const secret = document.getElementById('webhook-secret').value.trim();
+        const enabled = document.getElementById('webhook-enabled').checked;
+
+        if (enabled && !url) {
+            showToast('Please provide a webhook URL before enabling webhooks', 'error');
+            return;
+        }
+
+        try {
+            const body = {
+                webhook_url: url,
+                enabled: enabled
+            };
+            if (secret) {
+                body.webhook_secret = secret;
+            }
+
+            const response = await fetch('/api/alerts/webhook', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (handleAuthError(response)) return;
+
+            const data = await response.json();
+            if (response.ok) {
+                showToast('Webhook endpoint saved successfully', 'success');
+            } else {
+                showToast(data.detail || 'Failed to save webhook endpoint', 'error');
+            }
+        } catch (error) {
+            showToast('Error saving webhook settings', 'error');
+        }
+    }
+
     function showToast(message, type) {
         const container = document.getElementById('toast-container');
         const bgClass = type === 'success'
@@ -374,6 +521,25 @@
     });
 
     document.getElementById('test-email-btn').addEventListener('click', sendTestEmail);
+
+    const testWhBtn = document.getElementById('test-webhook-btn');
+    if (testWhBtn) testWhBtn.addEventListener('click', sendTestWebhook);
+
+    const saveWhBtn = document.getElementById('save-webhook-btn');
+    if (saveWhBtn) saveWhBtn.addEventListener('click', saveWebhookSettings);
+
+    const whEnabledToggle = document.getElementById('webhook-enabled');
+    if (whEnabledToggle) {
+        whEnabledToggle.addEventListener('change', (e) => {
+            const urlInput = document.getElementById('webhook-url');
+            if (e.target.checked && (!urlInput || !urlInput.value.trim())) {
+                showToast('Please enter a webhook endpoint URL first', 'error');
+                e.target.checked = false;
+                return;
+            }
+            saveWebhookSettings();
+        });
+    }
 
     // Load on page load
     loadSettings();

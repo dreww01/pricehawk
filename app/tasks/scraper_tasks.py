@@ -297,6 +297,22 @@ def scrape_product_manual(self, product_id: str) -> dict:
                         "failure_reason": scrape_result.failure_reason,
                         "retry_count": scrape_result.retry_count,
                     }
+                    if scrape_result.status == "success" and scrape_result.price:
+                        try:
+                            from app.services.alert_service import AlertService
+                            alert_svc = AlertService()
+                            alert_res = asyncio.run(alert_svc.check_price_change_and_alert(
+                                competitor_id=competitor_id,
+                                new_price=scrape_result.price,
+                                currency=scrape_result.currency,
+                                correlation_id=cid,
+                            ))
+                            if alert_res and alert_res.get("alert_created"):
+                                logger.info(
+                                    f"Alert triggered for competitor {competitor_id}: {alert_res.get('alert_type')}"
+                                )
+                        except Exception as alert_exc:
+                            logger.debug(f"Alert check during manual scrape failed for competitor {competitor_id}: {alert_exc}")
 
             except Exception as e:
                 logger.error(f"Error scraping competitor {competitor_id} ({url}): {str(e)}")
@@ -673,3 +689,92 @@ def cleanup_old_alerts(self) -> dict:
             "deleted_count": deleted_count,
             "correlation_id": cid,
         }
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+    retry_backoff=True,
+)
+def dispatch_webhook_alert(self, user_id: str, alert_data: dict, correlation_id: str | None = None) -> dict:
+    """
+    Deliver real-time webhook notification for a price drop alert.
+    Executes in background so main scraping jobs are never blocked.
+    """
+    req = getattr(self, "request", None)
+    req_headers = getattr(req, "headers", None) or {}
+    cid = (
+        correlation_id
+        or get_correlation_id()
+        or req_headers.get("correlation_id")
+        or getattr(req, "correlation_id", None)
+        or generate_correlation_id()
+    )
+
+    with correlation_context(cid):
+        if req is not None:
+            req.correlation_id = cid
+            if not getattr(req, "headers", None):
+                req.headers = {}
+            req.headers["correlation_id"] = cid
+
+        client = get_supabase_client()
+        try:
+            settings_res = (
+                client.table("user_alert_settings")
+                .select("*")
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if not settings_res.data:
+                logger.info("No alert settings found for user %s; skipping webhook", user_id)
+                return {"success": False, "reason": "settings_not_found", "correlation_id": cid}
+
+            settings = settings_res.data[0]
+            if not settings.get("webhook_enabled") or not settings.get("webhook_url"):
+                logger.info("Webhooks disabled or not configured for user %s", user_id)
+                return {"success": False, "reason": "webhook_not_enabled", "correlation_id": cid}
+
+            webhook_url = settings["webhook_url"]
+            webhook_secret = settings.get("webhook_secret")
+
+            from app.services.webhook_service import WebhookService
+            wh_service = WebhookService()
+            result = wh_service.send_alert(
+                webhook_url=webhook_url,
+                payload=alert_data,
+                webhook_secret=webhook_secret,
+                correlation_id=cid,
+            )
+
+            # Record in alert_history for audit
+            alert_id = alert_data.get("alert_id")
+            alert_type = alert_data.get("alert_type") or alert_data.get("event")
+            history_record = {
+                "user_id": user_id,
+                "digest_sent_at": datetime.now(timezone.utc).isoformat(),
+                "alerts_count": 1,
+                "price_drops": 1 if alert_type == "price_drop" else 0,
+                "price_increases": 1 if alert_type == "price_increase" else 0,
+                "currency_changes": 1 if alert_type == "currency_changed" else 0,
+                "email_status": "disabled",
+                "webhook_status": "sent" if result.get("success") else "failed",
+                "response_code": result.get("status_code"),
+                "error_message": result.get("error"),
+                "alert_ids": [alert_id] if alert_id else [],
+            }
+            try:
+                client.table("alert_history").insert(history_record).execute()
+            except Exception as hist_err:
+                logger.warning("Failed to record alert_history entry: %s", hist_err)
+
+            return {
+                "success": result.get("success", False),
+                "status_code": result.get("status_code"),
+                "error": result.get("error"),
+                "correlation_id": cid,
+            }
+        except Exception as exc:
+            logger.exception("Error dispatching webhook alert for user %s: %s", user_id, exc)
+            return {"success": False, "error": str(exc), "correlation_id": cid}

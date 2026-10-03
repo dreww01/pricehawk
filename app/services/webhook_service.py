@@ -156,6 +156,93 @@ class WebhookService:
 
         return {"success": True, "status_code": response.status_code, "error": None}
 
+    def send_alert(
+        self,
+        webhook_url: str,
+        payload: dict[str, Any],
+        webhook_secret: str | None = None,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Deliver a real-time JSON alert payload to a registered webhook URL.
+
+        Optional webhook_secret: If provided, signs the payload using HMAC SHA-256
+        and includes X-PriceHawk-Signature and X-PriceHawk-Timestamp headers.
+        If omitted, the webhook is dispatched without signature headers.
+        """
+        allowed_ips = self._validate_url(webhook_url)
+
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        timestamp = str(int(time.time()))
+
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "PriceHawk-Webhooks/1.0",
+            "X-PriceHawk-Timestamp": timestamp,
+        }
+
+        if webhook_secret:
+            signed_content = timestamp.encode("ascii") + b"." + body
+            signature = hmac.new(
+                webhook_secret.encode("utf-8"), signed_content, hashlib.sha256
+            ).hexdigest()
+            headers["X-PriceHawk-Signature"] = f"sha256={signature}"
+
+        cid = correlation_id or get_correlation_id()
+        if cid:
+            headers["X-Correlation-ID"] = cid
+
+        try:
+            transport = SafeWebhookTransport(allowed_ips=allowed_ips)
+            with httpx.Client(
+                transport=transport,
+                timeout=self.TIMEOUT_SECONDS,
+                follow_redirects=False,
+            ) as client:
+                response = client.post(
+                    webhook_url,
+                    content=body,
+                    headers=headers,
+                )
+            response.raise_for_status()
+            return {"success": True, "status_code": response.status_code, "error": None}
+        except httpx.HTTPStatusError as exc:
+            return {
+                "success": False,
+                "status_code": exc.response.status_code,
+                "error": f"HTTP {exc.response.status_code}: {exc.response.text[:200]}",
+            }
+        except WebhookDeliveryError:
+            raise
+        except httpx.HTTPError as exc:
+            return {"success": False, "status_code": None, "error": str(exc)[:500]}
+        except Exception as exc:
+            return {"success": False, "status_code": None, "error": str(exc)[:500]}
+
+    def send_test_ping(
+        self,
+        webhook_url: str,
+        webhook_secret: str | None = None,
+        correlation_id: str | None = None,
+        extra_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Send a test ping payload to verify an endpoint works."""
+        from datetime import datetime, timezone
+        payload = {
+            "event": "pricehawk.test_ping",
+            "event_type": "ping",
+            "message": "This is a sample ping from PriceHawk to verify your webhook endpoint.",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if extra_data:
+            payload.update(extra_data)
+        return self.send_alert(
+            webhook_url=webhook_url,
+            payload=payload,
+            webhook_secret=webhook_secret,
+            correlation_id=correlation_id,
+        )
+
     @staticmethod
     def _validate_url(webhook_url: str) -> set[str]:
         parsed = urlparse(webhook_url)

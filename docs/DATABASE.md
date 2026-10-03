@@ -258,7 +258,9 @@ Audit record for sent or failed digest email attempts.
 | `user_id` | `uuid` | NOT NULL, FK `auth.users(id) ON DELETE CASCADE` | Digest recipient. |
 | `digest_sent_at` | `timestamptz` | Default `now()` | Attempt timestamp. |
 | `alerts_count` | `integer` | NOT NULL | Number of alerts in digest. |
-| `email_status` | `varchar(20)` | Default `pending`, CHECK in `pending`, `sent`, `failed` | Delivery outcome. |
+| `email_status` | `varchar(20)` | Default `pending`, CHECK in `pending`, `sent`, `failed`, `disabled` | Delivery outcome for email channel. |
+| `webhook_status` | `varchar(20)` | Default `disabled`, CHECK in `pending`, `sent`, `failed`, `disabled` | Delivery outcome for webhook channel. |
+| `response_code` | `integer` | Nullable | HTTP status code received from external webhook recipient. |
 | `error_message` | `text` | Nullable | Sanitized failure reason. |
 
 ## Indexes
