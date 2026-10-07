@@ -1,4 +1,4 @@
-"""Database, request, and response model re-exports for backward compatibility."""
+"""Modular Pydantic schemas for PriceHawk application domains."""
 
 from app.core.errors import (
     ErrorCode,
