@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.scraper import MAX_PRODUCTS_LIMIT
+
 class TrackProductItem(BaseModel):
     """Single product to track with pre-fetched price data."""
     url: str
@@ -14,7 +16,7 @@ class TrackProductItem(BaseModel):
 class TrackProductsRequest(BaseModel):
     """Request to add discovered products to tracking."""
     group_name: str = Field(..., min_length=1, max_length=255)
-    products: list[TrackProductItem] = Field(..., min_length=1, max_length=5000)
+    products: list[TrackProductItem] = Field(..., min_length=1, max_length=MAX_PRODUCTS_LIMIT)
     alert_threshold_percent: Decimal = Field(default=Decimal("10.00"), ge=0, le=100)
 
 class TrackProductsResponse(BaseModel):

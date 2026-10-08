@@ -61,6 +61,10 @@ def test_backward_compatible_identity():
     assert db_models.PriceHistoryListResponse is product_schemas.PriceHistoryListResponse
     assert db_models.InsightResponse is product_schemas.InsightResponse
     assert db_models.ChartDataResponse is product_schemas.ChartDataResponse
+    assert db_models.TrackProductsRequest is product_schemas.TrackProductsRequest
+    assert db_models.TrackProductsRequest is schemas.TrackProductsRequest
+    assert db_models.TrackProductItem is product_schemas.TrackProductItem
+    assert db_models.TrackProductsResponse is product_schemas.TrackProductsResponse
 
     # Alert schemas
     assert db_models.AlertSettingsResponse is alert_schemas.AlertSettingsResponse
@@ -198,5 +202,29 @@ def test_routes_use_shared_schemas():
     assert account_route.VerifyEmailChangeRequest is auth_schemas.VerifyEmailChangeRequest
 
     assert scraper_route.WorkerHealthResponse is scraper_schemas.WorkerHealthResponse
+
+
+def test_track_products_request_max_limit_reference():
+    """Verify TrackProductsRequest references canonical MAX_PRODUCTS_LIMIT."""
+    import ast
+    from pathlib import Path
+
+    assert hasattr(product_schemas, "MAX_PRODUCTS_LIMIT"), "MAX_PRODUCTS_LIMIT must be imported in product schemas"
+    assert product_schemas.MAX_PRODUCTS_LIMIT is scraper_schemas.MAX_PRODUCTS_LIMIT
+
+    tree = ast.parse(Path("app/schemas/product.py").read_text(encoding="utf-8"))
+    max_length_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "TrackProductsRequest":
+            for stmt in node.body:
+                if isinstance(stmt, ast.AnnAssign) and stmt.target.id == "products":
+                    for kw in stmt.value.keywords:
+                        if kw.arg == "max_length":
+                            max_length_node = kw.value
+    assert max_length_node is not None, "max_length keyword not found on products field"
+    assert isinstance(max_length_node, ast.Name) and max_length_node.id == "MAX_PRODUCTS_LIMIT", (
+        f"TrackProductsRequest.products max_length must reference MAX_PRODUCTS_LIMIT, got {max_length_node}"
+    )
+
 
 
