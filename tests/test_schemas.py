@@ -164,3 +164,14 @@ def test_error_envelope_re_export():
     assert db_models.ErrorCode is schemas.ErrorCode
     assert db_models.STANDARD_ERROR_RESPONSES is schemas.STANDARD_ERROR_RESPONSES
     assert db_models.create_error_response is schemas.create_error_response
+
+
+def test_digest_run_response_required_fields():
+    """Verify DigestRunResponse requires price_drops, price_increases, and currency_changes."""
+    with pytest.raises(ValidationError):
+        alert_schemas.DigestRunResponse(
+            user_id="usr_123",
+            status="sent",
+            alerts_count=3,
+        )
+

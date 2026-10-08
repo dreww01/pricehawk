@@ -45,9 +45,9 @@ class DigestRunResponse(BaseModel):
     user_id: str
     status: str
     alerts_count: int
-    price_drops: int = 0
-    price_increases: int = 0
-    currency_changes: int = 0
+    price_drops: int
+    price_increases: int
+    currency_changes: int
     email_sent: bool = False
     webhook_sent: bool = False
     dry_run: bool = False
