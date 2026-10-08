@@ -31,9 +31,12 @@ class AlertSettingsUpdate(BaseModel):
     @field_validator("webhook_url")
     @classmethod
     def validate_webhook_url(cls, v: str | None) -> str | None:
-        if v and not v.strip().startswith("https://"):
+        if v is None:
+            return None
+        val = v.strip()
+        if val and not val.startswith("https://"):
             raise ValueError("Webhook URL must use HTTPS")
-        return v.strip() if v else None
+        return val or None
 
 class DigestRunRequest(BaseModel):
     """Options for an on-demand digest run."""

@@ -123,6 +123,10 @@ def test_webhook_url_validation():
     update_none = alert_schemas.AlertSettingsUpdate(webhook_url=None)
     assert update_none.webhook_url is None
 
+    # AlertSettingsUpdate normalizes whitespace-only and empty strings to None
+    update_whitespace = alert_schemas.AlertSettingsUpdate(webhook_url="   ")
+    assert update_whitespace.webhook_url is None
+
     with pytest.raises(ValidationError):
         alert_schemas.AlertSettingsUpdate(webhook_url="http://insecure.com/hook")
 
