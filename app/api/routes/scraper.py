@@ -4,18 +4,18 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
 
 from app.core.security import get_current_user, CurrentUser
 from app.core.logging import get_correlation_id, generate_correlation_id
 from app.db.database import get_supabase_client
 from app.middleware.rate_limit import limiter, SCRAPE_RATE_LIMIT
 from app.db.models import (
-    PriceHistoryResponse,
+    ChartDataResponse,
     PriceHistoryListResponse,
+    PriceHistoryResponse,
     ScrapeResultResponse,
     ScrapeTaskResponse,
-    ChartDataResponse,
+    WorkerHealthResponse,
 )
 from app.services.scraper_service import scrape_url
 from app.services.chart_service import ChartService
@@ -24,14 +24,6 @@ from app.tasks.scraper_tasks import scrape_product_manual, get_scrape_progress
 
 router = APIRouter(tags=["scraper"])
 security = HTTPBearer(auto_error=False)
-
-
-class WorkerHealthResponse(BaseModel):
-    """Response model for worker health check."""
-    worker_status: str
-    ping_response: str | None = None
-    active_tasks: int | None = None
-    error: str | None = None
 
 
 @router.post(

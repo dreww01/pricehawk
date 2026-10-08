@@ -5,39 +5,27 @@ Uses Supabase Auth for user management.
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
-from pydantic import BaseModel, EmailStr
 
 from app.core.config import get_settings
 from app.core.security import get_current_user, CurrentUser, set_access_token_cookie
 from app.db.database import get_supabase_client
 from app.db.models import (
+    AuthResponse,
     ErrorEnvelope,
+    ForgotPasswordRequest,
     ForgotPasswordResponse,
+    LoginRequest,
+    ResetPasswordRequest,
     ResetPasswordResponse,
+    SignupRequest,
     SignupResponse,
+    VerifyResetOTPRequest,
     VerifyResetOTPResponse,
 )
 from app.middleware.rate_limit import limiter, AUTH_RATE_LIMIT
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class SignupRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class AuthResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user_id: str
-    email: str
 
 
 @router.post(
@@ -146,20 +134,6 @@ async def signup(request: Request, signup_data: SignupRequest) -> SignupResponse
 def get_me(current_user: CurrentUser = Depends(get_current_user)):
     """Get current authenticated user info."""
     return current_user
-
-
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-
-
-class VerifyResetOTPRequest(BaseModel):
-    email: EmailStr
-    otp: str
-
-
-class ResetPasswordRequest(BaseModel):
-    reset_token: str
-    new_password: str
 
 
 @router.post(

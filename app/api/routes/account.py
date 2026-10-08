@@ -6,7 +6,6 @@ Change password, change email, and account settings.
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, EmailStr
 
 from app.core.flash import flash
 from app.core.security import get_current_user, CurrentUser, delete_access_token_cookie
@@ -15,9 +14,12 @@ from app.db.models import (
     AccountDeleteResponse,
     AccountDeletionDetails,
     AccountSettingsResponse,
+    ChangeEmailRequest,
     ChangeEmailResponse,
+    ChangePasswordRequest,
     ChangePasswordResponse,
     ErrorEnvelope,
+    VerifyEmailChangeRequest,
 )
 from app.services.account_service import delete_user_account
 from app.services.dashboard_cache import invalidate_dashboard_cache
@@ -25,19 +27,6 @@ from app.services.dashboard_cache import invalidate_dashboard_cache
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/account", tags=["account"])
 security = HTTPBearer()
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-
-
-class ChangeEmailRequest(BaseModel):
-    new_email: EmailStr
-
-
-class VerifyEmailChangeRequest(BaseModel):
-    token: str
 
 
 @router.post(

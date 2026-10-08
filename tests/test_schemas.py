@@ -179,3 +179,24 @@ def test_digest_run_response_required_fields():
             alerts_count=3,
         )
 
+
+def test_routes_use_shared_schemas():
+    """Verify route modules use shared schemas rather than defining local models."""
+    import app.api.routes.auth as auth_route
+    import app.api.routes.account as account_route
+    import app.api.routes.scraper as scraper_route
+
+    assert auth_route.LoginRequest is auth_schemas.LoginRequest
+    assert auth_route.SignupRequest is auth_schemas.SignupRequest
+    assert auth_route.AuthResponse is auth_schemas.AuthResponse
+    assert auth_route.ForgotPasswordRequest is auth_schemas.ForgotPasswordRequest
+    assert auth_route.VerifyResetOTPRequest is auth_schemas.VerifyResetOTPRequest
+    assert auth_route.ResetPasswordRequest is auth_schemas.ResetPasswordRequest
+
+    assert account_route.ChangePasswordRequest is auth_schemas.ChangePasswordRequest
+    assert account_route.ChangeEmailRequest is auth_schemas.ChangeEmailRequest
+    assert account_route.VerifyEmailChangeRequest is auth_schemas.VerifyEmailChangeRequest
+
+    assert scraper_route.WorkerHealthResponse is scraper_schemas.WorkerHealthResponse
+
+

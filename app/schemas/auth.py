@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, EmailStr, Field
 
 
 class AccountSettingsResponse(BaseModel):
@@ -127,15 +127,19 @@ class VerifyResetOTPRequest(BaseModel):
     """Request to verify password reset one-time password code."""
 
     email: EmailStr
-    token: str
+    otp: str = Field(..., validation_alias=AliasChoices("otp", "token"))
+
+    @property
+    def token(self) -> str:
+        return self.otp
 
 
 class ResetPasswordRequest(BaseModel):
     """Request to complete password reset using verified token."""
 
-    email: EmailStr
     reset_token: str
     new_password: str
+    email: EmailStr | None = None
 
 
 class ChangePasswordRequest(BaseModel):
