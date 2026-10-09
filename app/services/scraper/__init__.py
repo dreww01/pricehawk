@@ -1,0 +1,86 @@
+"""Modular scraper engine, parser heuristics, and store platform detection."""
+from app.services.scraper.models import (
+    DatabasePersistenceError,
+    FetchResult,
+    ScrapeAccessDeniedError,
+    ScrapeException,
+    ScrapeFailureReason,
+    ScrapeLayoutError,
+    ScrapeNetworkError,
+    ScrapeNotFoundError,
+    ScrapeRateLimitError,
+    ScrapeResult,
+    ScrapeTimeoutError,
+)
+from app.services.scraper.engine import (
+    BLOCKED_DOMAIN_SUFFIXES,
+    USER_AGENTS,
+    ScraperEngine,
+    classify_error_message,
+    classify_scrape_exception,
+    fetch_page,
+    fetch_with_httpx,
+    fetch_with_playwright,
+    is_bot_challenge,
+    normalize_url,
+    validate_url,
+)
+from app.services.scraper.parser import (
+    PRICE_SELECTORS,
+    ScraperParser,
+    extract_price_from_html,
+    parse_price,
+)
+from app.services.scraper.detector import (
+    HANDLER_CLASSES,
+    PlatformDetectionResult,
+    PlatformDetector,
+    classify_platform_from_html,
+    classify_platform_from_url,
+    detect_platform,
+    detect_platform_details,
+    detect_platform_from_html,
+    get_handler_for_platform,
+)
+
+__all__ = [
+    # Models & Exceptions
+    "ScrapeFailureReason",
+    "ScrapeException",
+    "ScrapeTimeoutError",
+    "ScrapeNetworkError",
+    "ScrapeRateLimitError",
+    "ScrapeAccessDeniedError",
+    "ScrapeNotFoundError",
+    "ScrapeLayoutError",
+    "DatabasePersistenceError",
+    "ScrapeResult",
+    "FetchResult",
+    # Engine
+    "ScraperEngine",
+    "fetch_page",
+    "fetch_with_httpx",
+    "fetch_with_playwright",
+    "normalize_url",
+    "validate_url",
+    "is_bot_challenge",
+    "classify_scrape_exception",
+    "classify_error_message",
+    "BLOCKED_DOMAIN_SUFFIXES",
+    "USER_AGENTS",
+    # Parser
+    "ScraperParser",
+    "extract_price_from_html",
+    "parse_price",
+    "PRICE_SELECTORS",
+    # Detector
+    "PlatformDetector",
+    "HANDLER_CLASSES",
+    "PlatformDetectionResult",
+    "classify_platform_from_html",
+    "classify_platform_from_url",
+    "detect_platform",
+    "detect_platform_details",
+    "detect_platform_from_html",
+    "get_handler_for_platform",
+]
