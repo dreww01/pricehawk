@@ -144,6 +144,16 @@ def test_parser_unit():
     assert extracted_cur == "USD"
 
 
+def test_extract_price_from_html_signature():
+    """Verify extract_price_from_html signature requires html and retailer without defaults."""
+    sig = inspect.signature(extract_price_from_html)
+    assert list(sig.parameters.keys()) == ["html", "retailer"]
+    assert sig.parameters["retailer"].default is inspect.Parameter.empty
+
+    with pytest.raises(TypeError):
+        extract_price_from_html("<div>$10</div>")  # type: ignore[call-arg]
+
+
 def test_engine_url_validation():
     """Verify engine component validates URLs and blocks private addresses."""
     valid, err = validate_url("https://example.com/item/1")

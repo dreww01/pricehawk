@@ -115,7 +115,7 @@ def _extract_price_from_json_ld(soup: BeautifulSoup) -> tuple[Decimal | None, st
     return None, None
 
 
-def extract_price_from_html(html: str, retailer: str = "unknown") -> tuple[Decimal | None, str]:
+def extract_price_from_html(html: str, retailer: str) -> tuple[Decimal | None, str]:
     """Extract price using CSS selectors, platform detection, and generalized heuristics."""
     soup = BeautifulSoup(html, "lxml")
     groups: list[list[str]] = []
