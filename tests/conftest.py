@@ -9,18 +9,23 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-if "/tmp/pip_packages" not in sys.path:
-    if os.path.exists("/tmp/pip_packages"):
-        sys.path.insert(0, "/tmp/pip_packages")
-if os.path.exists("/tmp/pip_packages"):
-    current_pp = os.environ.get("PYTHONPATH", "")
-    paths = [p for p in current_pp.split(os.pathsep) if p]
-    if "/tmp/pip_packages" not in paths:
-        paths.insert(0, "/tmp/pip_packages")
-    cwd = os.getcwd()
-    if "." not in paths and cwd not in paths:
-        paths.append(cwd)
-    os.environ["PYTHONPATH"] = os.pathsep.join(paths)
+# If pytest is invoked directly with an incompatible system Python, delegate to the
+# local project virtual environment if present.
+if sys.version_info < (3, 13) and os.environ.get("_PRICEHAWK_REEXEC") != "1":
+    import subprocess
+
+    venv_pytest = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", ".venv", "bin", "pytest")
+    )
+    if os.path.exists(venv_pytest):
+        env = os.environ.copy()
+        env["_PRICEHAWK_REEXEC"] = "1"
+        res = subprocess.run([venv_pytest] + sys.argv[1:], env=env)
+        sys.exit(res.returncode)
+
+cwd = os.getcwd()
+if cwd not in sys.path:
+    sys.path.insert(0, cwd)
 
 # Application settings are validated during module import. Use inert local values so
 # the test suite never depends on a developer's .env file or external credentials.
