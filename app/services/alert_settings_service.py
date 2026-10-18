@@ -1,6 +1,6 @@
 """User-scoped alert preferences and webhook configuration persistence."""
 
-from typing import Any, cast
+from typing import Any
 
 from supabase import Client
 
@@ -11,13 +11,13 @@ from app.services.webhook_service import WebhookDeliveryError, WebhookService
 
 
 def default_settings(user_id: str) -> dict[str, Any]:
-    return {
-        "user_id": user_id,
-        "email_enabled": True,
-        "digest_frequency_hours": 24,
-        "alert_price_drop": True,
-        "alert_price_increase": True,
-    }
+    return dict(
+        user_id=user_id,
+        email_enabled=True,
+        digest_frequency_hours=24,
+        alert_price_drop=True,
+        alert_price_increase=True,
+    )
 
 
 class AlertSettingsService:
@@ -34,22 +34,20 @@ class AlertSettingsService:
             .eq("user_id", self.user_id)
             .execute()
         )
-        data = cast(list[dict[str, Any]], response.data or [])
-        if data:
-            return data[0]
+        if response.data:
+            return response.data[0]
         response = (
             self.client.table("user_alert_settings")
             .insert(default_settings(self.user_id))
             .execute()
         )
-        inserted = cast(list[dict[str, Any]], response.data or [])
-        if not inserted:
+        if not response.data:
             raise AlertOperationError("Failed to create default settings", 500)
-        return inserted[0]
+        return response.data[0]
 
     def update(self, updates: AlertSettingsUpdate) -> dict[str, Any]:
         if updates.webhook_enabled is True:
-            existing: dict[str, Any] = {}
+            existing = {}
             if not updates.webhook_url or not updates.webhook_secret:
                 response = (
                     self.client.table("user_alert_settings")
@@ -58,8 +56,7 @@ class AlertSettingsService:
                     .limit(1)
                     .execute()
                 )
-                data = cast(list[dict[str, Any]], response.data or [])
-                existing = data[0] if data else {}
+                existing = response.data[0] if response.data else {}
             if not (updates.webhook_url or existing.get("webhook_url")):
                 raise AlertOperationError("webhook_url is required when enabling webhooks")
             secret = updates.webhook_secret or existing.get("webhook_secret")
@@ -70,10 +67,10 @@ class AlertSettingsService:
         payload = updates.model_dump(exclude_none=True)
         if not payload:
             raise AlertOperationError("No fields to update")
-        saved = self._save(payload)
-        if not saved:
+        response = self._save(payload)
+        if not response:
             raise AlertOperationError("Failed to update settings", 500)
-        return saved
+        return response
 
     def _save(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = (
@@ -82,15 +79,13 @@ class AlertSettingsService:
             .eq("user_id", self.user_id)
             .execute()
         )
-        data = cast(list[dict[str, Any]], response.data or [])
-        if not data:
+        if not response.data:
             response = (
                 self.client.table("user_alert_settings")
                 .insert({**default_settings(self.user_id), **payload})
                 .execute()
             )
-            data = cast(list[dict[str, Any]], response.data or [])
-        return data[0] if data else {}
+        return response.data[0] if response.data else {}
 
     def get_webhook(self) -> dict[str, Any]:
         response = (
@@ -100,11 +95,10 @@ class AlertSettingsService:
             .limit(1)
             .execute()
         )
-        data = cast(list[dict[str, Any]], response.data or [])
-        record = data[0] if data else {}
+        record = response.data[0] if response.data else {}
         return self._webhook_response(
             record,
-            "Webhook configuration loaded" if data else "No webhook configuration found",
+            "Webhook configuration loaded" if response.data else "No webhook configuration found",
         )
 
     def register_webhook(self, body: WebhookRegisterRequest) -> dict[str, Any]:
@@ -132,9 +126,9 @@ class AlertSettingsService:
 
     @staticmethod
     def _webhook_response(record: dict[str, Any], message: str) -> dict[str, Any]:
-        return {
-            "webhook_url": record.get("webhook_url"),
-            "webhook_enabled": bool(record.get("webhook_enabled")),
-            "webhook_secret_configured": bool(record.get("webhook_secret")),
-            "message": message,
-        }
+        return dict(
+            webhook_url=record.get("webhook_url"),
+            webhook_enabled=bool(record.get("webhook_enabled")),
+            webhook_secret_configured=bool(record.get("webhook_secret")),
+            message=message,
+        )

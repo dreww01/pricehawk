@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -120,7 +120,7 @@ class AlertDetector:
                     "new_price": float(new_price),
                     "old_currency": old_currency,
                     "new_currency": currency,
-                    "detected_at": datetime.now(UTC).isoformat(),
+                    "detected_at": datetime.now(timezone.utc).isoformat(),
                 }
                 sb.table("pending_alerts").insert(alert_data).execute()
                 _invalidate_cache(user_id)
@@ -196,7 +196,7 @@ class AlertDetector:
                 "new_price": float(new_price),
                 "price_change_percent": float(change_percent),
                 "threshold_percent": float(threshold_percent),
-                "detected_at": datetime.now(UTC).isoformat(),
+                "detected_at": datetime.now(timezone.utc).isoformat(),
             }
             sb.table("pending_alerts").insert(alert_data).execute()
             _invalidate_cache(user_id)

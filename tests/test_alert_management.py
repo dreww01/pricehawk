@@ -80,12 +80,9 @@ def test_currency_acceptance_dismisses_only_currency_alerts(monkeypatch):
     result = AlertManagementService(user_db, "owner", lambda: service_db).accept_currency(
         "c1", "EUR"
     )
-    assert result == {
-        "success": True,
-        "message": "Now tracking prices in EUR",
-        "competitor_id": "c1",
-        "new_currency": "EUR",
-    }
+    assert result == dict(
+        success=True, message="Now tracking prices in EUR", competitor_id="c1", new_currency="EUR"
+    )
     assert service_db.calls == [
         ("competitors", {"expected_currency": "EUR"}, [("id", "c1")]),
         (
@@ -125,7 +122,7 @@ def test_bulk_currency_acceptance_skips_missing_currency_and_scopes_pending_quer
     service_db = Database()
     monkeypatch.setattr("app.services.alert_management_service.invalidate_dashboard_cache", Mock())
     result = AlertManagementService(user_db, "owner", lambda: service_db).accept_all_currencies()
-    assert result == {"success": True, "message": "Accepted 1 currency changes", "updated_count": 1}
+    assert result == dict(success=True, message="Accepted 1 currency changes", updated_count=1)
     assert user_db.calls[0][2] == [
         ("user_id", "owner"),
         ("alert_type", "currency_changed"),
@@ -142,7 +139,7 @@ def test_no_pending_currency_changes_do_not_acquire_privileged_client():
     result = AlertManagementService(
         Database(pending_alerts=[]), "owner", privileged
     ).accept_all_currencies()
-    assert result == {"success": True, "message": "No pending currency changes", "updated_count": 0}
+    assert result == dict(success=True, message="No pending currency changes", updated_count=0)
     privileged.assert_not_called()
 
 
@@ -182,14 +179,14 @@ async def test_manual_check_preserves_threshold_precedence(
 def test_history_delivery_outcome_and_status_aliases(email, webhook, status, delivered):
     database = Database(
         alert_history=[
-            {
-                "id": "h1",
-                "digest_sent_at": "2026-01-01T00:00:00Z",
-                "alerts_count": 1,
-                "email_status": email,
-                "webhook_status": webhook,
-                "response_code": 202,
-            }
+            dict(
+                id="h1",
+                digest_sent_at="2026-01-01T00:00:00Z",
+                alerts_count=1,
+                email_status=email,
+                webhook_status=webhook,
+                response_code=202,
+            )
         ]
     )
     result = AlertQueryService(database, "owner").history(7)

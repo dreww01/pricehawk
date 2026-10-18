@@ -1,7 +1,7 @@
 """Authorized alert commands used by the HTTP presentation layer."""
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from supabase import Client
 
@@ -26,11 +26,9 @@ class AlertManagementService:
             .eq("id", competitor_id)
             .execute()
         )
-        data = cast(list[dict[str, Any]], response.data or [])
-        if not data:
+        if not response.data:
             raise AlertOperationError("Competitor not found", 404)
-        products = data[0].get("products")
-        if not isinstance(products, dict) or products.get("user_id") != self.user_id:
+        if (response.data[0].get("products") or {}).get("user_id") != self.user_id:
             raise AlertOperationError(message, 403)
 
     async def check_price(
@@ -61,12 +59,12 @@ class AlertManagementService:
             ).eq("alert_type", "currency_changed").execute()
         finally:
             invalidate_dashboard_cache(self.user_id)
-        return {
-            "success": True,
-            "message": f"Now tracking prices in {currency}",
-            "competitor_id": competitor_id,
-            "new_currency": currency,
-        }
+        return dict(
+            success=True,
+            message=f"Now tracking prices in {currency}",
+            competitor_id=competitor_id,
+            new_currency=currency,
+        )
 
     def accept_all_currencies(self) -> dict[str, Any]:
         response = (
@@ -77,15 +75,14 @@ class AlertManagementService:
             .eq("included_in_digest", False)
             .execute()
         )
-        data = cast(list[dict[str, Any]], response.data or [])
-        if not data:
-            return {"success": True, "message": "No pending currency changes", "updated_count": 0}
+        if not response.data:
+            return dict(success=True, message="No pending currency changes", updated_count=0)
         client = self.service_client()
         updated_count = 0
         currency_updated = False
         try:
-            for alert in data:
-                if not alert.get("new_currency"):
+            for alert in response.data:
+                if not alert["new_currency"]:
                     continue
                 client.table("competitors").update({"expected_currency": alert["new_currency"]}).eq(
                     "id", alert["competitor_id"]
@@ -99,8 +96,8 @@ class AlertManagementService:
             # A committed currency update must invalidate even if dismissal fails.
             if currency_updated:
                 invalidate_dashboard_cache(self.user_id)
-        return {
-            "success": True,
-            "message": f"Accepted {updated_count} currency changes",
-            "updated_count": updated_count,
-        }
+        return dict(
+            success=True,
+            message=f"Accepted {updated_count} currency changes",
+            updated_count=updated_count,
+        )

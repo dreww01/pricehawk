@@ -139,25 +139,24 @@ Test standards:
 
 ## Formatting, Linting, and Typing
 
-PriceHawk configures Ruff for formatting and linting alongside Mypy for static type checking. Development dependencies are declared in the `dev` dependency group in `pyproject.toml`.
-
-Run verification commands:
-
-```bash
-uv run ruff check app/api/routes/alert* app/services/alert* app/services/email_service.py app/services/templates tests/test_alert_management.py tests/test_alert_service_collaborators.py tests/test_email* tests/test_development_verification.py
-uv run ruff format --check app/api/routes/alert* app/services/alert* app/services/email_service.py app/services/templates tests/test_alert_management.py tests/test_alert_service_collaborators.py tests/test_email* tests/test_development_verification.py
-uv run mypy
-```
-
-Code quality standards:
+The current project metadata does not declare a dedicated formatter, linter, or static type checker dependency. New code should still follow these standards:
 
 | Concern | Standard |
 | --- | --- |
-| Formatting | Black-compatible Python formatting via Ruff, 100 character line width, no trailing whitespace. |
+| Formatting | Black-compatible Python formatting, 88-100 character practical line width, no trailing whitespace. |
 | Imports | Standard library, third-party, local imports grouped clearly. |
-| Typing | Type hints for functions, route helpers, service methods, and return values verified by Mypy. |
+| Typing | Type hints for new functions, route helpers, service methods, and return values. |
 | Validation | Pydantic models for public API request/response contracts. |
 | Comments | Explain non-obvious rationale and operational constraints, not obvious syntax. |
+
+If tooling is added later, prefer:
+
+```bash
+uv add --dev ruff mypy
+uv run ruff check .
+uv run ruff format .
+uv run mypy app
+```
 
 Do not introduce broad formatting churn in unrelated files during feature work.
 

@@ -119,7 +119,6 @@ class EmailService:
             msg.attach(MIMEText(html_body, "html", "utf-8"))
             with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
                 server.starttls()
-                assert self.config.smtp_password is not None
                 server.login(self.config.smtp_username, self.config.smtp_password)
                 server.send_message(msg)
             return {

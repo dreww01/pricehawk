@@ -99,7 +99,7 @@ def html_digest(
                         Hi {user_name},
                     </p>
                     <p style="font-size: 14px; color: #6b7280; margin-bottom: 30px;">
-                        You have {len(alerts)} price {"alert" if len(alerts) == 1 else "alerts"} from the last {digest_period_hours} hours:
+                        You have {len(alerts)} price {'alert' if len(alerts) == 1 else 'alerts'} from the last {digest_period_hours} hours:
                     </p>
 
                     {alerts_html}
@@ -146,9 +146,10 @@ def plain_text_digest(
         change_percent = float(alert.get("price_change_percent") or 0)
         currency = alert.get("currency", "USD")
         if alert_type == "currency_changed":
-            old_curr = alert.get("old_currency") or "unknown"
-            new_curr = alert.get("new_currency") or "unknown"
-            detail_lines = [f"   Currency: {old_curr} → {new_curr}"]
+            detail_lines = [
+                f"   Currency: {alert.get('old_currency') or 'unknown'} → "
+                f"{alert.get('new_currency') or 'unknown'}"
+            ]
         else:
             arrow = "↓" if alert_type == "price_drop" else "↑"
             detail_lines = [
@@ -170,8 +171,7 @@ def plain_text_digest(
 
 def test_email() -> tuple[str, str, str]:
     """Build the configuration smoke-test email without sending it."""
-    timestamp = datetime.now().isoformat()
-    html_body = f"""
+    html_body = """
         <html>
             <body style="font-family: Arial, sans-serif; padding: 20px;">
                 <h2>PriceHawk Email Test</h2>
@@ -182,7 +182,7 @@ def test_email() -> tuple[str, str, str]:
                 </p>
             </body>
         </html>
-        """
+        """.format(timestamp=datetime.now().isoformat())
     text_body = f"""
         PriceHawk Email Test
 
