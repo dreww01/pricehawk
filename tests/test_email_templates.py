@@ -33,15 +33,15 @@ def service(monkeypatch):
 
 @pytest.fixture
 def alert():
-    return dict(
-        product_name="Widget",
-        competitor_name="Store",
-        alert_type="price_drop",
-        old_price=Decimal("100.00"),
-        new_price=Decimal("89.99"),
-        price_change_percent=Decimal("-10.01"),
-        currency="USD",
-    )
+    return {
+        "product_name": "Widget",
+        "competitor_name": "Store",
+        "alert_type": "price_drop",
+        "old_price": Decimal("100.00"),
+        "new_price": Decimal("89.99"),
+        "price_change_percent": Decimal("-10.01"),
+        "currency": "USD",
+    }
 
 
 def test_digest_renders_drops_increases_and_currency_changes(alert):

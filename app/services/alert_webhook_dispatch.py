@@ -3,7 +3,7 @@
 import logging
 import threading
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ class AlertWebhookDispatcher:
             alert_type = alert_event.get("alert_type") or alert_event.get("event")
             history_data = {
                 "user_id": user_id,
-                "digest_sent_at": datetime.now(timezone.utc).isoformat(),
+                "digest_sent_at": datetime.now(UTC).isoformat(),
                 "alerts_count": 1,
                 "price_drops": 1 if alert_type == "price_drop" else 0,
                 "price_increases": 1 if alert_type == "price_increase" else 0,

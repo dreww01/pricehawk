@@ -3,12 +3,12 @@
 from fastapi import APIRouter, Depends, Request
 from supabase import Client
 
+from app.api.routes.alert_http import alert_errors
 from app.core.security import CurrentUser, get_current_user
 from app.db.database import get_user_supabase_client
 from app.db.models import WebhookConfigResponse, WebhookRegisterRequest
 from app.middleware.rate_limit import API_RATE_LIMIT, limiter
 from app.services.alert_settings_service import AlertSettingsService
-from app.api.routes.alert_http import alert_errors
 
 router = APIRouter()
 

@@ -2,8 +2,8 @@
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from supabase import Client
 
@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 def run_digest(
     user_id: str,
     email: str | None,
-    role: str,
+    role: str | None,
     force: bool,
     dry_run: bool,
     correlation_id: str | None,
     factory: Callable[[], DigestService],
 ) -> dict[str, Any]:
-    if force and role not in {"admin", "service_role"}:
+    if force and (role or "") not in {"admin", "service_role"}:
         raise AlertOperationError("Only administrators may force a digest run", 403)
     return factory().run_for_user(
         user_id, email, force=force, dry_run=dry_run, correlation_id=correlation_id
@@ -41,7 +41,7 @@ def send_test_email(email: str | None, factory: Callable[[], EmailService]) -> d
         raise AlertOperationError(
             "Failed to send test email. Please check your email configuration.", 500
         )
-    return dict(success=True, message="Test email sent successfully", email=email)
+    return {"success": True, "message": "Test email sent successfully", "email": email}
 
 
 def send_test_webhook(
@@ -61,10 +61,11 @@ def send_test_webhook(
             .limit(1)
             .execute()
         )
-        if response.data:
-            url = response.data[0].get("webhook_url")
+        data = cast(list[dict[str, Any]], response.data or [])
+        if data:
+            url = cast(str | None, data[0].get("webhook_url"))
             if secret is None:
-                secret = response.data[0].get("webhook_secret")
+                secret = cast(str | None, data[0].get("webhook_secret"))
     if not url:
         raise AlertOperationError("No webhook URL configured or provided")
     try:
@@ -77,32 +78,32 @@ def send_test_webhook(
     except WebhookDeliveryError as exc:
         raise AlertOperationError(str(exc)) from exc
     audit_client = service_client()
-    record = dict(
-        user_id=user_id,
-        digest_sent_at=datetime.now(timezone.utc).isoformat(),
-        alerts_count=1,
-        price_drops=0,
-        price_increases=0,
-        currency_changes=0,
-        email_status="disabled",
-        webhook_status="sent" if result.get("success") else "failed",
-        response_code=result.get("status_code"),
-        error_message=result.get("error"),
-        alert_ids=[],
-    )
+    record: dict[str, Any] = {
+        "user_id": user_id,
+        "digest_sent_at": datetime.now(UTC).isoformat(),
+        "alerts_count": 1,
+        "price_drops": 0,
+        "price_increases": 0,
+        "currency_changes": 0,
+        "email_status": "disabled",
+        "webhook_status": "sent" if result.get("success") else "failed",
+        "response_code": result.get("status_code"),
+        "error_message": result.get("error"),
+        "alert_ids": [],
+    }
     try:
         audit_client.table("alert_history").insert(record).execute()
     except Exception as exc:
         logger.warning("Failed to insert alert_history audit row: %s", exc)
     success = bool(result.get("success"))
-    return dict(
-        success=success,
-        message=(
+    return {
+        "success": success,
+        "message": (
             "Test webhook ping sent successfully"
             if success
             else f"Test webhook delivery failed: {result.get('error')}"
         ),
-        status_code=result.get("status_code"),
-        response_code=result.get("status_code"),
-        error=None if success else result.get("error"),
-    )
+        "status_code": result.get("status_code"),
+        "response_code": result.get("status_code"),
+        "error": None if success else result.get("error"),
+    }
