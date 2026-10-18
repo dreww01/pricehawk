@@ -189,6 +189,13 @@ pricehawk/
 └── pyproject.toml           # Python package and dependency metadata
 ```
 
+## Alert and Email Module Boundaries
+
+- `app/api/routes/alerts.py` and `alert_webhooks.py` parse HTTP input and return existing response schemas; `alert_http.py` translates application failures into HTTP errors.
+- Alert settings, read models, authorized currency/price commands, and manual delivery live in focused `app/services/alert_*` modules. Privileged currency writes occur only after user-scoped ownership checks or selection of that user's pending alerts.
+- `AlertService` remains the worker-facing detection/maintenance API; its collaborators implement detection policy, maintenance, and background webhook dispatch. `DigestService` retains the existing digest claim, lease, and delivery orchestration.
+- `app/services/templates/email_templates.py` builds subjects and HTML/plain-text content without SMTP dependencies. `EmailService` owns configuration, recipient validation, multipart SMTP delivery, and retries.
+
 ## Security Baseline
 
 - Supabase JWTs protect application routes.

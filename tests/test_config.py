@@ -108,3 +108,18 @@ def test_log_format_settings() -> None:
     empty_settings = build_settings(log_format="")
     assert empty_settings.log_format == "auto"
 
+
+def test_uv_cache_dir_configured() -> None:
+    """Ensure uv cache directory is configured to be project-local and reproducible."""
+    import pathlib
+    import tomllib
+
+    pyproject_path = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+    assert "tool" in data, "pyproject.toml missing [tool] table"
+    assert "uv" in data["tool"], "pyproject.toml missing [tool.uv] table"
+    assert "cache-dir" in data["tool"]["uv"], "pyproject.toml missing [tool.uv.cache-dir]"
+    assert data["tool"]["uv"]["cache-dir"] == ".cache/uv"
+
+
